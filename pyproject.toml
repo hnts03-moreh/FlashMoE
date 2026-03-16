@@ -7,6 +7,9 @@ name = "flashmoe"
 version = "0.1.0"
 description = "Completely Fused Distributed MoE"
 requires-python = ">=3.10"
+authors = [
+  { name = "Osayamen Jonathan Aimuyo", email = "osayamen@stanford.edu" },
+]
 
 [tool.setuptools]
 packages = ["flashmoe"]

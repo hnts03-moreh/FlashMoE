@@ -21,9 +21,9 @@ namespace flashmoe::scheduler
     // upper bounds for register state sizes
 #if defined(FLASHMOE_ARCH)
     #if FLASHMOE_ARCH >= 1000
-        constexpr int PROCESSOR_STATE_SIZE = 10;
+        constexpr int PROCESSOR_STATE_SIZE = 6;
     #elif FLASHMOE_ARCH >= 900
-        constexpr int PROCESSOR_STATE_SIZE = 9;
+        constexpr int PROCESSOR_STATE_SIZE = 5;
     #else
         constexpr int PROCESSOR_STATE_SIZE = 8;
     #endif

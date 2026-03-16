@@ -5,9 +5,6 @@
 #ifndef FLASHMOE_CONTEXT_CUH
 #define FLASHMOE_CONTEXT_CUH
 
-#include <cute/int_tuple.hpp>
-
-#include "cuda/memory"
 #include "infra/bitset.cuh"
 #include "infra/packed.cuh"
 #include "infra/signal.cuh"
@@ -16,42 +13,6 @@
 #include "infra/tq.cuh"
 
 namespace flashmoe {
-  __host__ __forceinline__ __device__
-  auto checkAlignment(const void *const&p, const bool supports32 = false) {
-    const auto alignment = supports32 ? 32 : 16;
-    if (p == nullptr || !cuda::is_aligned(p, alignment)) {
-      printf("Pointer is not %d-byte aligned\n", alignment);
-      cuda::std::terminate();
-    }
-  }
-
-  template<int subscriberWarpSize>
-  __host__ __forceinline__
-  constexpr auto subscriberTQLength(const int &world, const uint &numLocalExperts, const uint &ecTilesM,
-                                    const uint &E, const uint &tilesN0, const uint &tilesN1,
-                                    const uint &subscriberCount) {
-    const auto dispatchTaskQL = cute::ceil_div(world * numLocalExperts, subscriberCount / subscriberWarpSize) *
-                                (cute::ceil_div(ecTilesM * tilesN0, subscriberWarpSize) + cute::ceil_div(
-                                   tilesN0, subscriberWarpSize));
-    const auto combineTaskQL = (cute::ceil_div(ecTilesM * E, subscriberCount) * tilesN1) +
-                               cute::ceil_div(ecTilesM * E * tilesN1, subscriberCount);
-    return static_cast<size_t>(dispatchTaskQL + combineTaskQL) * subscriberCount;
-  }
-
-  template<int subscriberCount, int subscriberWarpSize>
-  __device__ __forceinline__
-  constexpr auto subscriberTQLength(const int &world, const int &numLocalExperts, const uint &ecTilesM,
-                                    const uint &E, const uint &tilesN0, const uint &tilesN1) {
-    static_assert(subscriberCount % subscriberWarpSize == 0);
-    return subscriberTQLength<subscriberWarpSize>(world, numLocalExperts, ecTilesM, E, tilesN0, tilesN1,
-                                                  subscriberCount);
-  }
-
-  __host__ __device__ __forceinline__
-  auto secondaryTQLength(const int &world, const int &numLocalExperts, const uint &ecTilesM, const uint &tilesN1) {
-    return world * numLocalExperts * ecTilesM * tilesN1;
-  }
-
   struct Context {
     cuda::std::byte *const symHeap = nullptr;
     uint64_t *const signals = nullptr; // [[world, num_local_experts], [E, tiles(roundEC), tiles(H)]]

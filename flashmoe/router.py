@@ -8,7 +8,7 @@ class RouterInitArgs:
         self.device_id = device_id
         self.stream_ptr = stream_ptr
 
-def initialize(arg: InitArgs, return_logits: bool = False):
+def initialize(arg: InitArgs, return_logits: bool = False) -> ContextHandle:
     from .bindings import gate_bindings
     mod_prefix = "flashmoe_router"
     mod_name = (f"{mod_prefix}_s{arg.tokens_per_rank}_h{arg.token_dim}"

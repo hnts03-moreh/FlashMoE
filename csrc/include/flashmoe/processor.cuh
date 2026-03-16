@@ -22,23 +22,6 @@
 #include "tile.cuh" // cublasdx and tileGEMM
 #include "infra/tq.cuh"
 
-namespace flashmoe
-{
-  enum class MLPMatmulType {
-    gated = 0,
-    vanilla = 1
-  };
-  template<int m>
-  consteval MLPMatmulType defineMLPType() {
-    static_assert(m == 0 || m == 1, "Invalid MLPMatmulType enum value");
-    if constexpr(m == 0) {
-      return MLPMatmulType::gated;
-    }
-    else {
-      return MLPMatmulType::vanilla;
-    }
-  }
-}
 namespace flashmoe::processor
 {
   // fused GEMM, epilogue and data transfer

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from enum import IntEnum
-
-from .cb import get_rank
 
 class ContextHandle:
     __slots__ = ("_mod", "_ctx")
@@ -39,6 +38,51 @@ class ActivationType(IntEnum):
     SILU = 1
     GELU = 2
     RELU = 3 # as many as CUTLASS supports
+
+class ForwardArgs:
+    # integers below are for addresses to the underlying contiguous memory of the corresponding tensor
+    tokens : int # [S, H]
+    expert_counts: int # [E]
+    local_expert_up: int # [num_local_experts, H, I]
+    local_expert_up_v: int # [num_local_experts, H, I]
+    local_bias_up: int # [num_local_experts, I]
+    local_bias_up_v: int # [num_local_experts, I]
+    local_expert_down: int # [num_local_experts, I, H]
+    local_bias_down: int # [num_local_experts, H]
+    moe_out: int # [S, H]
+    swish_alpha: float = 1.0
+    swish_beta: float = 1.0
+    stream_ptr: int
+    def __init__(self,
+                 mt: MLPType,
+                 tokens: int,
+                 expert_counts: int,
+                 local_expert_up: int,
+                 local_bias_up: int,
+                 local_expert_down: int,
+                 local_bias_down: int,
+                 moe_out: int,
+                 stream_ptr: int,
+                 *,
+                 swish_alpha: float = 1.0,
+                 swish_beta: float = 1.0,
+                 local_expert_up_v: int = None,
+                 local_bias_up_v: int = None):
+        # if GatedMLP, then mlp weights should be specified
+        assert not mt == MLPType.GATED or local_expert_up_v is not None
+        assert not mt == MLPType.GATED or local_bias_up_v is not None
+        self.tokens = tokens
+        self.expert_counts = expert_counts
+        self.local_expert_up = local_expert_up
+        self.local_expert_up_v = local_expert_up_v
+        self.local_expert_down = local_expert_down
+        self.local_bias_up = local_bias_up
+        self.local_bias_up_v = local_bias_up_v
+        self.local_bias_down = local_bias_down
+        self.moe_out = moe_out
+        self.stream_ptr = stream_ptr
+        self.swish_alpha = swish_alpha
+        self.swish_beta = swish_beta
 
 class InitArgs:
     from typing import List
@@ -171,8 +215,8 @@ def _get_compiled(arg: InitArgs, src: str, mod_prefix: str, mod_name: str):
     # Process-unique tag for temp dirs
     host = socket.gethostname()
     pid = os.getpid()
-    rank = get_rank()
-    uniq = f"{host}_rank{rank}_pid{pid}"
+    tid = threading.get_ident()
+    uniq = f"{host}_tid{tid}_pid{pid}"
 
     gen_dir = build_root / f"gen_{uniq}"
     bdir = build_root / f"build_{uniq}"
@@ -190,7 +234,7 @@ def _get_compiled(arg: InitArgs, src: str, mod_prefix: str, mod_name: str):
         try:
             fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             with os.fdopen(fd, "w") as f:
-                f.write(f"host={host}\npid={pid}\nrank={rank}\ntime={time.time()}\n")
+                f.write(f"host={host}\npid={pid}\ntid={tid}\ntime={time.time()}\n")
             return True
         except FileExistsError:
             return False

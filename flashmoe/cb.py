@@ -1,6 +1,10 @@
 # communication backend
 IS_INITIALIZED = False
 
+def has_package(name: str):
+    import importlib.util
+    return importlib.util.find_spec(name) is not None
+
 def get_local_rank() -> int:
     import os
     if has_package("torch") and os.environ.get("LOCAL_RANK") is not None:
@@ -11,10 +15,6 @@ def get_local_rank() -> int:
         return MPI.COMM_WORLD.Get_rank() % cuda.system.num_devices
     else:
         raise RuntimeError("At least one of {torch, mpi4py} must be available")
-
-def has_package(name: str):
-    import importlib.util
-    return importlib.util.find_spec(name) is not None
 
 def initialize() -> None:
     import cuda.core.experimental as cuda
@@ -60,4 +60,10 @@ def get_world_size() -> int:
     assert IS_INITIALIZED
     import nvshmem.core as nvshmem
     return nvshmem.n_pes()
+
+def sync_all(stream_ptr: int) -> None:
+    assert IS_INITIALIZED
+    import nvshmem.core as nvshmem
+    import cuda.core.experimental as cuda
+    nvshmem.sync_all(stream=cuda.Stream.from_handle(stream_ptr))
 

@@ -4,6 +4,7 @@
 __pycache__/
 *.lock
 *egg-info/
+.venv/
 
 # csrc
 csrc/cmake-build-*
@@ -14,4 +15,3 @@ csrc/include/flashmoe/*.txt
 csrc/include/flashmoe/*.log
 csrc/*.txt
 csrc/*.log
-

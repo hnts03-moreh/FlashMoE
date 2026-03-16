@@ -11,11 +11,6 @@
 
 namespace flashmoe
 {
-  enum class CombineMode {
-    single, // top k = 1
-    plural // top k > 1
-  };
-
   __device__ __forceinline__
   float2 float2Mul(const float2& a, const float2& b) {
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)

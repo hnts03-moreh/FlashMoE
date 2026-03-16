@@ -13,6 +13,8 @@
 #include <nvshmem.h>
 
 #include <cuda/cmath>
+#include <cuda/memory>
+#include <cute/int_tuple.hpp>
 
 #include "infra/constants.cuh"
 #include "infra/telemetry.cuh"
@@ -21,6 +23,7 @@
 #include "infra/atomics.cuh"
 #include "infra/signal.cuh"
 #include "infra/heap.cuh"
+
 #if !defined(CHECK_CUDA)
 #  define CHECK_CUDA(e)                                      \
 do {                                                         \
@@ -35,6 +38,16 @@ do {                                                         \
     }                                                        \
 } while (0)
 #endif
+
+__host__ __forceinline__
+  auto checkPtrAlignment(const void *const&p, const bool supports32 = false) {
+  const auto alignment = supports32 ? 32 : 16;
+  if (p == nullptr || !cuda::is_aligned(p, alignment)) {
+    printf("Pointer is not %d-byte aligned\n", alignment);
+    cuda::std::terminate();
+  }
+}
+
 namespace flashmoe {
   struct MoEArgs {
     const size_t elementBytes;
@@ -70,6 +83,33 @@ namespace flashmoe {
                                                           numLocalExperts(nlx), topo(topo_) {
     }
   };
+
+  template<int subscriberWarpSize>
+  __host__ __forceinline__
+  constexpr auto subscriberTQLength(const int &world, const uint &numLocalExperts, const uint &ecTilesM,
+                                    const uint &E, const uint &tilesN0, const uint &tilesN1,
+                                    const uint &subscriberCount) {
+    const auto dispatchTaskQL = cute::ceil_div(world * numLocalExperts, subscriberCount / subscriberWarpSize) *
+                                (cute::ceil_div(ecTilesM * tilesN0, subscriberWarpSize) + cute::ceil_div(
+                                   tilesN0, subscriberWarpSize));
+    const auto combineTaskQL = (cute::ceil_div(ecTilesM * E, subscriberCount) * tilesN1) +
+                               cute::ceil_div(ecTilesM * E * tilesN1, subscriberCount);
+    return static_cast<size_t>(dispatchTaskQL + combineTaskQL) * subscriberCount;
+  }
+
+  __host__ __device__ __forceinline__
+  auto secondaryTQLength(const int &world, const int &numLocalExperts, const uint &ecTilesM, const uint &tilesN1) {
+    return world * numLocalExperts * ecTilesM * tilesN1;
+  }
+
+  template<int subscriberCount, int subscriberWarpSize>
+  __device__ __forceinline__
+  constexpr auto subscriberTQLength(const int &world, const int &numLocalExperts, const uint &ecTilesM,
+                                    const uint &E, const uint &tilesN0, const uint &tilesN1) {
+    static_assert(subscriberCount % subscriberWarpSize == 0);
+    return subscriberTQLength<subscriberWarpSize>(world, numLocalExperts, ecTilesM, E, tilesN0, tilesN1,
+                                                  subscriberCount);
+  }
 
   __global__ void bI(cuda::barrier<cuda::thread_scope_device> *db, const uint blocks) {
     init(db, blocks);
@@ -209,7 +249,7 @@ namespace flashmoe {
       throw std::runtime_error("failed to allocate heap via NVSHMEM");
     }
     const auto supports32 = arch >= 1000;
-    checkAlignment(sHeap, supports32);
+    checkPtrAlignment(sHeap, supports32);
 
     Task *tQ = nullptr;
     const bool threadConditions = args.threads >= WARP_SIZE * 2 && args.threads % WARP_SIZE == 0;
@@ -233,8 +273,8 @@ namespace flashmoe {
       // catches overflow in scheduler. See circularIdx function
       throw std::runtime_error("gRQIdxMax should be < UINT32_MAX. Not an error: need to migrate to uint64");
     }
-    checkAlignment(tQ);
-    checkAlignment(pTq);
+    checkPtrAlignment(tQ);
+    checkPtrAlignment(pTq);
 
     cuda::std::byte *GEMM0Staging = nullptr;
     const size_t stagingLength = static_cast<size_t>(args.epWorld * args.numLocalExperts * roundEC) * args.

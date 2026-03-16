@@ -317,7 +317,6 @@ void kickstart(const Options& opts) {
   CHECK_CUDA(cudaSetDevice(devId));
   cudaStream_t stream;
   CHECK_CUDA(cudaStreamCreate(&stream));
-  const auto gbw = gpu_bw::gpu_drive_bandwidth_gbs(devId);
 
   int archMajor = 0;
   CHECK_CUDA(cudaDeviceGetAttribute(&archMajor,cudaDevAttrComputeCapabilityMajor, devId));
@@ -333,7 +332,7 @@ void kickstart(const Options& opts) {
   const auto world = nvshmem_n_pes();
   const auto epRank = nvshmem_my_pe();
   if (epRank == 0) {
-    printf("rank, dtype, S, H, I, E, k, FlashMoE_Time(ms), error(%%), EC, GPU, SM, IntraTopo(GB/s), Topology,"
+    printf("rank, dtype, S, H, I, E, k, FlashMoE_Time(ms), error(%%), EC, GPU, SM, Topology,"
            " MLPType, bM, bN0, bK0, bN1, bK1, threads, blocks/SM, SMs, blocks, rtol, atol, "
            "graph_launches, warmup, runs, workspace(MiB)\n");
     fflush(stdout); // ensures the header shows up first, especially relevant in large world size runs.
@@ -373,12 +372,6 @@ void kickstart(const Options& opts) {
     flashmoe::MAX_ALIGNMENT);
   constexpr auto GEMM1Sz = cutlass::round_up(cute::max(sizeof(Element) * bK1 * pSK1 * (bM + bN1),
     sizeof(Element) * bM * bN1), flashmoe::MAX_ALIGNMENT);
-  /*
-  const auto dispatchSz = opts.E * (sizeof(flashmoe::PEL) + sizeof(int));
-  const auto OSSz = flashmoe::os::getSharedSize<threads, bM>(world, numLocalExperts, opts.E, opts.EC, tilesN1);
-  const auto taskSz = sizeof(flashmoe::Task) * tilesN1;
-  constexpr auto combineSz = cutlass::round_up(sizeof(Element) * bM * bN1, flashmoe::MAX_ALIGNMENT);
-  const auto kernelSz = cute::max(GEMM0Sz, GEMM1Sz, dispatchSz, OSSz, taskSz, combineSz);*/
 
   const auto kernelSz = flashmoe::moe::kernelSMEM<Config>(opts.E, opts.EC, world, numLocalExperts, tilesN1);
   int maxSharedMemory = 0;
@@ -401,10 +394,6 @@ void kickstart(const Options& opts) {
     CHECK_CUDA(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kernelSz));
     CHECK_CUDA(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel, threads, kernelSz));
   }
-  /*const auto processorBlocks = (cute::ceil_div(opts.S * opts.k, bM) * ((opts.I / bN0) + (opts.H / bN1))) +
-    (cute::ceil_div(opts.S * opts.k, bM) * (opts.H / bN1));
-  const auto dispatchBlocks = flashmoe::moe::dispatchSuperBlockSize(opts.E) * opts.E;
-  const uint blocks = cute::max(cute::min(cute::max(processorBlocks, dispatchBlocks) + 1, bps * num_sms), 2);*/
 
   const auto blocks = flashmoe::moe::kernelBlocks<bM, bN0, bN1>(opts.S, opts.H, opts.I, opts.E, opts.k,
     bps, num_sms);
@@ -413,7 +402,7 @@ void kickstart(const Options& opts) {
   constexpr auto sro = flashmoe::SoftMaxOptimizationLevel::none;
   constexpr auto rl = flashmoe::gate::ReturnLogits::no;
   using GateTile = cute::Shape<cute::Int<bM>, cute::Int<bNGate>, cute::Int<bK0>, cute::Int<pSK0>>;
-  auto gateKernel = flashmoe::gate::forwardKernel<GateTile, Arch, threads, grl, sro, rl, AccumType, Element, Element>;
+  auto gateKernel = flashmoe::gate::forwardKernel<GateTile, Arch, threads, grl, sro, rl, AccumType, Element>;
   constexpr auto gateShared = cutlass::round_up(cute::max(sizeof(Element) * bK0 * pSK0 * (bM + bNGate),
     sizeof(flashmoe::gate::SoftType) * bM * bNGate), flashmoe::MAX_ALIGNMENT);
   if (gateShared > maxSharedMemory) {
@@ -562,11 +551,21 @@ void kickstart(const Options& opts) {
     opts.S, opts.H, opts.I, opts.E, opts.EC, Arch, mt, isGated ? swishAlpha : 1.f, isGated ? swishBeta : 1.f
   };
 
+  const flashmoe::gate::GateKernelArgs gkArgs{
+    .tokens = reinterpret_cast<const cuda::std::byte*>(tokens),
+    .weights = reinterpret_cast<const cuda::std::byte*>(gateWeights),
+    .expertCounts = expertCounts,
+    .tokenIds = moeContext.tokenIndices,
+    .S = static_cast<int>(opts.S),
+    .H = static_cast<int>(opts.H),
+    .E = static_cast<int>(opts.E),
+    .k = static_cast<int>(opts.k),
+    .EC = static_cast<int>(opts.EC),
+    .roundEC = cute::ceil_div(static_cast<int>(opts.EC), bM) * bM
+  };
   // run fused gate to populate tokenIndices and expertCounts
-  Element* routing = nullptr;
-  flashmoe::gate::forwardKernel<GateTile, Arch, gateThreads, grl, sro, rl, AccumType>
-  <<<gateBlocks, gateThreads, gateShared, stream>>>(tokens, gateWeights, routing,
-    expertCounts, opts.S, opts.H, opts.E, opts.k, opts.EC, moeContext.tokenIndices, gateCtx.ecGuards, gateCtx.ssp, gateCtx.rtp);
+  flashmoe::gate::forwardKernel<GateTile, Arch, gateThreads, grl, sro, rl, AccumType, Element>
+  <<<gateBlocks, gateThreads, gateShared, stream>>>(gkArgs, gateCtx);
   auto flashMK = [&](const flashmoe::Topology topology, const uint& k_runs) {
     if (topology == flashmoe::Topology::NVLINK_ONLY) {
       for (int i = 0; i < k_runs; ++i) {
@@ -654,8 +653,8 @@ void kickstart(const Options& opts) {
   cudaDeviceProp prop{};
   CHECK_CUDA(cudaGetDeviceProperties(&prop, devId)); // Get properties for current rank
   const auto sms = "sm_" + std::to_string(Arch / 10);
-  printf("%d, %s, %lu, %lu, %lu, %lu, %lu, %f, %lf, %lu, %s, %s, %s, %s, %s, %d, %d, %d, %d, %d, %d, %d, %d, %d, %.1e, %.1e, %d, %d, %d, %lf\n",
-         epRank, es, opts.S, opts.H, opts.I, opts.E, opts.k, m_time_ms, ep, opts.EC, prop.name, sms.c_str(), gbw.toString().c_str(),
+  printf("%d, %s, %lu, %lu, %lu, %lu, %lu, %f, %lf, %lu, %s, %s, %s, %s, %d, %d, %d, %d, %d, %d, %d, %d, %d, %.1e, %.1e, %d, %d, %d, %lf\n",
+         epRank, es, opts.S, opts.H, opts.I, opts.E, opts.k, m_time_ms, ep, opts.EC, prop.name, sms.c_str(),
          kernelTopo == flashmoe::Topology::MIXED ? "MultiNode" : "SingleNode",
          mt_string<mt>(), bM, bN0, bK0, bN1, bK1, threads, bps, num_sms, blocks, opts.rtol, opts.atol, opts.graph_launches,
          opts.graph_launches > 0 ? opts.runs : opts.warmup, opts.runs, workspaceBytesMiB);

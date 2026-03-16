@@ -49,6 +49,15 @@ namespace flashmoe::moe
     return cute::ceil_div(128, cute::max(E, 4));
   }
 
+  __host__ __forceinline__
+  auto checkAlignment(const void *const&p, const bool supports32 = false) {
+    const auto alignment = supports32 ? 32 : 16;
+    if (p == nullptr || !cuda::is_aligned(p, alignment)) {
+      printf("Pointer is not %d-byte aligned\n", alignment);
+      cuda::std::terminate();
+    }
+  }
+
   template<typename Config>
   __host__ __forceinline__
   constexpr uint kernelSMEM(const uint& E, const uint& EC, const int& world,

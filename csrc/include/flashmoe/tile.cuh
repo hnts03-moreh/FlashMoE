@@ -85,6 +85,24 @@ namespace flashmoe::heuristics {
 
 namespace flashmoe
 {
+  enum class CombineMode {
+    single, // top k = 1
+    plural // top k > 1
+  };
+  enum class MLPMatmulType {
+    gated = 0,
+    vanilla = 1
+  };
+  template<int m>
+  consteval MLPMatmulType defineMLPType() {
+    static_assert(m == 0 || m == 1, "Invalid MLPMatmulType enum value");
+    if constexpr(m == 0) {
+      return MLPMatmulType::gated;
+    }
+    else {
+      return MLPMatmulType::vanilla;
+    }
+  }
   template<int t>
   struct DataType {
     static_assert(t >= 0 && t < 4, "Invalid datatype constant");

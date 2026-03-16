@@ -1,7 +1,11 @@
-from . import router
-from .jit import InitArgs, ContextHandle, Topology, MLPType, ActivationType, DataType
-from .cb import get_local_rank, IS_INITIALIZED
+import nvshmem.core
 
+from . import router
+from .jit import InitArgs, ContextHandle, Topology, MLPType, ActivationType, DataType, ForwardArgs
+from .cb import get_local_rank
+from . import reference
+
+SHOULD_FINALIZE_NVSHMEM = False
 def initialize(arg: InitArgs) -> ContextHandle:
     from .jit import _get_compiled
     from .bindings import flashmoe_bindings
@@ -13,6 +17,8 @@ def initialize(arg: InitArgs) -> ContextHandle:
         and (arg.num_local_experts is not None)
         and (arg.my_pe is not None)), "if rank is set, then so should all dependent metadata"
     if arg.ep_rank is None:
+        global SHOULD_FINALIZE_NVSHMEM
+        SHOULD_FINALIZE_NVSHMEM = True
         cb.initialize()
         arg.ep_rank = cb.get_rank()
         arg.my_pe = cb.get_rank()
@@ -72,52 +78,7 @@ def initialize(arg: InitArgs) -> ContextHandle:
     )
     return ContextHandle(mod, ctx)
 
-class MoEForwardArgs:
-    # integers below are for addresses to the underlying contiguous memory of the corresponding tensor
-    tokens : int # [S, H]
-    expert_counts: int # [E]
-    local_expert_up: int # [num_local_experts, H, I]
-    local_expert_up_v: int # [num_local_experts, H, I]
-    local_bias_up: int # [num_local_experts, I]
-    local_bias_up_v: int # [num_local_experts, I]
-    local_expert_down: int # [num_local_experts, I, H]
-    local_bias_down: int # [num_local_experts, H]
-    moe_out: int # [S, H]
-    swish_alpha: float = 1.0
-    swish_beta: float = 1.0
-    stream_ptr: int
-    def __init__(self,
-                 mt: MLPType,
-                 tokens: int,
-                 expert_counts: int,
-                 local_expert_up: int,
-                 local_bias_up: int,
-                 local_expert_down: int,
-                 local_bias_down: int,
-                 moe_out: int,
-                 stream_ptr: int,
-                 *,
-                 swish_alpha: float = 1.0,
-                 swish_beta: float = 1.0,
-                 local_expert_up_v: int = None,
-                 local_bias_up_v: int = None):
-        # if GatedMLP, then mlp weights should be specified
-        assert not mt == MLPType.GATED or local_expert_up_v is not None
-        assert not mt == MLPType.GATED or local_bias_up_v is not None
-        self.tokens = tokens
-        self.expert_counts = expert_counts
-        self.local_expert_up = local_expert_up
-        self.local_expert_up_v = local_expert_up_v
-        self.local_expert_down = local_expert_down
-        self.local_bias_up = local_bias_up
-        self.local_bias_up_v = local_bias_up_v
-        self.local_bias_down = local_bias_down
-        self.moe_out = moe_out
-        self.stream_ptr = stream_ptr
-        self.swish_alpha = swish_alpha
-        self.swish_beta = swish_beta
-
-def forward(handle: ContextHandle, args: MoEForwardArgs) -> None:
+def forward(handle: ContextHandle, args: ForwardArgs) -> None:
     handle.mod.forward(handle.context,
                        tokens=args.tokens,
                        expert_counts=args.expert_counts,
@@ -134,3 +95,8 @@ def forward(handle: ContextHandle, args: MoEForwardArgs) -> None:
 
 def finalize(handle: ContextHandle, stream_ptr: int) -> None:
     handle.mod.finalize(handle.context, stream_ptr)
+    if SHOULD_FINALIZE_NVSHMEM:
+        import cuda.core.experimental as cuda
+        dev = cuda.Device(get_local_rank())
+        dev.sync()
+        nvshmem.core.finalize()
