@@ -310,7 +310,7 @@ def main():
     k_ = 1
     device_id_ = flashmoe.get_local_rank()
     # call kernel
-    run_fused_moe_forward_w_correctness_check(tokens_per_rank_, token_dim_, ffn_size_, num_experts_, k_, device_id_, args.torch_init)
+    run_fused_moe_forward(tokens_per_rank_, token_dim_, ffn_size_, num_experts_, k_, device_id_, args.torch_init)
 
 if __name__ == "__main__":
     main()
