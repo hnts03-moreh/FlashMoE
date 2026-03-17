@@ -3,12 +3,12 @@
 A Completely fused distributed MoE kernel providing high-performance single- and multi-node EP inference 
 and compatible with CUDA graphs. See paper [here](https://arxiv.org/abs/2506.04667).
 ## Problem: MoE Bottlenecks in Inference
-<div style="display: flex; justify-content: center; gap: 20px;">
-  <div style="text-align: center;">
-    <img src="plots/FlashMoE_motivation.png" width="2426" alt="Opportunity">
-    <div><em>Figure 1: Opportunity. MoE constitutes 67%-95% of inference runtime</em></div>
-  </div>
+<div style="text-align: center;">
+  <img src="plots/FlashMoE_motivation.png" width="2426" alt="Opportunity">
+    <p><em>Figure 1: Opportunity. MoE constitutes 67%-95% of inference runtime</em></p>
 </div>
+
+---
 
 This text will wrap around the image on the left side. Useful for clean layouts in documentation.
 
@@ -58,8 +58,7 @@ we support
 
 ## 🚀 Python QuickStart
 ```bash
-uv venv flashmoe && source flashmoe/bin/activate && uv pip install nvshmem4py-cu12 # or nvshmem4py-cu13
-uv pip install flashmoe
+pip install flashmoe[cu12] # or cu13
 ```
 ## Using Python API
 ```python
@@ -186,11 +185,13 @@ we use model shapes and data types as defined in its corresponding `config.json`
 <p><em>Figure 2: Up to 5.1x faster MoE layer runtime on Qwen-30B with single-node EP</em></p>
 </div>
 
+---
+
 ## Gated MLP
 
 <div align="center">
   <img src="plots/FlashMoE_A100_single_node-2.png" width="4101" alt="">
-<p><em>Figure 2: Up to 5.1x faster MoE layer runtime on Qwen-30B with single-node EP</em></p>
+<p><em>Figure 3: Up to 5.1x faster MoE layer runtime on Qwen-30B with single-node EP</em></p>
 </div>
 
 ---
@@ -198,7 +199,7 @@ we use model shapes and data types as defined in its corresponding `config.json`
 ## Conventional MLP
 <div align="center">
   <img src="plots/FlashMoE_A100_vs_COMET.png" width="2946" alt="">
-<p><em>Figure 3: Up to 2.6x faster runtime DeepSeek-V2-Lite</em></p>
+<p><em>Figure 4: Up to 2.6x faster runtime DeepSeek-V2-Lite</em></p>
 </div>
 
 ---
@@ -206,7 +207,7 @@ we use model shapes and data types as defined in its corresponding `config.json`
 ## Multi-node (libfabric on Slingshot 11)
 <div align="center">
   <img src="plots/FlashMoE_A100_multi_node.png" width="5592" alt="">
-<p><em>Figure 4: Up to 3x speedup on Llama4-Scout for multi-node EP!</em></p>
+<p><em>Figure 5: Up to 3x speedup on Llama4-Scout for multi-node EP!</em></p>
 </div>
 
 --- 
@@ -214,7 +215,7 @@ we use model shapes and data types as defined in its corresponding `config.json`
 ## H100s
 <div align="center">
   <img src="plots/FlashMoE_H100_single_node.png" width="2940" alt="">
-<p><em>Figure 5: Up to 2.5x speedup on H100s.</em></p>
+<p><em>Figure 6: Up to 2.5x speedup on H100s.</em></p>
 </div>
 
 ---
