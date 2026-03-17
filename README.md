@@ -1,7 +1,8 @@
 # FlashMoE: Fast Distributed MoE in a Single Kernel [NeurIPS'25]
-
-A Completely fused distributed MoE kernel providing high-performance single- and multi-node EP inference 
-and compatible with CUDA graphs. See paper [here](https://arxiv.org/abs/2506.04667).
+FlashMoE is the first fully fused Distributed MoE system that achieves high tensor core utilization
+by eliminating kernel boundaries and enabling fine-grained overlap of communication and computation.
+We provide high-performance single- and multi-node EP inference 
+and work seamlessly with CUDA graphs. See paper [here](https://arxiv.org/abs/2506.04667).
 
 ## Table of Contents
 1. [Motivation](#problem-moe-bottlenecks-in-inference)
@@ -21,24 +22,25 @@ and compatible with CUDA graphs. See paper [here](https://arxiv.org/abs/2506.046
     </td>
     <td align="center">
       <img src="assets/FlashMoE_tensor_core_idle_time.png" alt="Tensor core utilization" width="600"/><br>
-      <em>Figure 2: Tensor core Utilization. y-axis is percentage of MoE runtime that tensor cores are inactive.<em>
+      <em>Figure 2: Tensor core Utilization. y-axis is percentage of MoE runtime that tensor cores are inactive.</em>
     </td>
   </tr>
 </table>
 
-Distributed MoE (DMoE) is a highly dynamic workload that is both compute and communication-intensive, so much so that 
-it takes up to 95% (Figure 1) of the runtime of distributed inference. This data highlights a huge opportunity: 
-optimizing DMoE execution directly translates to significant E2E inference gains! 
-However, we observe that existing DMoE implementations leave significant performance headroom, specifically they 
-exhibit very low tensor core utilization.
+Distributed Mixture-of-Experts (DMoE) is an extremely demanding workload, both compute- and communication-intensive,
+accounting for up to **95% of total inference runtime** (Figure 1). 
 
+This makes DMoE the primary bottleneck in distributed inference and a critical target for optimization.
 
-We attribute this inefficiency to three causes: (1) exposed communication on the critical path, 
-(2) straggler delays due to load imbalance and 
-(3) system overheads arising from addressing the dynamism of token routing; for instance, such overheads present during the 
-necessary preprocessing of inputs or metadata management for downstream compute operators such as GroupedGEMM.
+However, existing implementations leave significant performance untapped, achieving only **26% tensor core utilization** (Figure 2).
 
-As a result, these systems end up spending only a meager 26% (Figure 2) of their total runtime using the tensor cores.
+We identify three key sources of inefficiency:
+
+1. **Exposed communication on the critical path**  
+2. **Straggler-induced delays** from load imbalance  
+3. **System overheads** from dynamic token routing (e.g., metadata management, inputs preprocessing for computer operators like GroupedGEMM)
+
+As a result, GPUs spend the majority of time stalled, with only **26% of runtime utilizing tensor cores**.
 
 ## Our Solution: Complete Kernel Fusion
 
@@ -47,36 +49,37 @@ As a result, these systems end up spending only a meager 26% (Figure 2) of their
 <p><em>Figure 3: FlashMoE Architecture</em></p>
 </div>
 
-To address these issues, we resort to _complete_ kernel fusion unlocking:
+We address these inefficiencies through **complete kernel fusion**, enabling:
 
-1. fine-grained overlap of communication with computation at a tile granularity
-2. overlap of the aforementioned processing overheads using SM specialization, 
-3. exploiting _task locality_ at scale, where GPU SMs can actualize out-of-order execution of computation or communication tasks whose dependencies are met with minimal delay.
+1. **Fine-grained overlap of communication and computation** at tile granularity  
+2. **Latency hiding of preprocessing and system overheads** via SM specialization  
+3. **Exploitation of task locality at scale**, allowing SMs to execute ready tasks out-of-order, minimizing idle and boosting resource utilization.
 
-In contrast, existing implementations which are spread out across tens to hundreds of serialized kernels exhibit poor 
-task locality as tasks are strictly executed in the declared (stream) order, enforcing unnecessarily strict 
-interdependencies.
+In contrast, existing implementations rely on tens to hundreds of serialized kernels, enforcing strict execution order
+and limiting task locality.
 
-<div style="clear: both;"></div>
-
-A case in point is the idle time that GPUs must pay at synchronizing collectives, e.g. AllGather, ReduceScatter, AlltoAll, as they await stragglers.
-Here, GPUs are unable to execute compute tasks that are functionally independent of this synchronizing communication.
+This results in unnecessary stalls—for example, during collective synchronization (AllGather, ReduceScatter, AllToAll),
+where GPUs idle waiting for stragglers instead of executing independent compute tasks.
 
 ## Our Work
-To that end, we develop **FlashMoE** (Figure 3), the first completely fused Distributed MoE implementation. 
-FlashMoe is a high-throughput, fast and portable system that fuses:
-- MoE Dispatch
-- Expert computation (Gated MLP or conventional MLP)
-- MoE Combine
+We present **FlashMoE** (Figure 3), the first **fully fused Distributed MoE system**.
 
-into a *single, tile-pipelined, persistent kernel*. We develop an Operating System (OS) within the kernel which executes concurrently of computation thus hiding latency of 
-processing overhead. 
+FlashMoE is a high-throughput, portable system that fuses:
+- MoE Dispatch  
+- Expert Computation (Gated MLP or standard MLP)  
+- MoE Combine  
 
-We develop the system from scratch entirely in **CUDA C++** and occassional inline PTX, leaning heavily on 
-[cuBLASDx](https://docs.nvidia.com/cuda/cublasdx/) and [NVSHMEM](https://developer.nvidia.com/nvshmem), 
-for high-performance, device-side compute and asynchronous, device-initiated communication, respectively. 
-We also rely heavily on critical infrastructure from [CCCL](https://github.com/nvidia/cccl) and 
-[CUTLASS](https://github.com/NVIDIA/cutlass).
+into a **single tile-pipelined persistent kernel**.
+
+At its core, FlashMoE embeds an **Operating System within the kernel**, enabling concurrent scheduling and execution,
+thereby hiding system and communication latency. 
+
+FlashMoE is built from the ground up in **CUDA C++**, with selective inline PTX.
+It leverages:
+
+- [cuBLASDx](https://docs.nvidia.com/cuda/cublasdx/) for device-side high-performance compute  
+- [NVSHMEM](https://developer.nvidia.com/nvshmem) for asynchronous, device-initiated communication  
+- [CCCL](https://github.com/nvidia/cccl) and [CUTLASS](https://github.com/NVIDIA/cutlass) for critical infrastructure
 
 ### 🏎️ Portability
 
@@ -108,7 +111,8 @@ We support
 
 ## 🚀 Python QuickStart
 ```bash
-pip install flashmoe[cu12] # or cu13
+git clone https://github.com/osayamenja/FlashMoE.git
+pip install ".[cu12]" # or cu13
 ```
 ## Using Python API
 ```python
