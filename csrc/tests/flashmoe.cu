@@ -402,7 +402,8 @@ void kickstart(const Options& opts) {
   constexpr auto sro = flashmoe::SoftMaxOptimizationLevel::none;
   constexpr auto rl = flashmoe::gate::ReturnLogits::no;
   using GateTile = cute::Shape<cute::Int<bM>, cute::Int<bNGate>, cute::Int<bK0>, cute::Int<pSK0>>;
-  auto gateKernel = flashmoe::gate::forwardKernel<GateTile, Arch, threads, grl, sro, rl, AccumType, Element>;
+  constexpr int gateThreads = cute::max(flashmoe::tile::suggest_thread_count<bM, bNGate, bK0, Arch, Element, AccumType>(), bM);
+  auto gateKernel = flashmoe::gate::forwardKernel<GateTile, Arch, gateThreads, grl, sro, rl, AccumType, Element>;
   constexpr auto gateShared = cutlass::round_up(cute::max(sizeof(Element) * bK0 * pSK0 * (bM + bNGate),
     sizeof(flashmoe::gate::SoftType) * bM * bNGate), flashmoe::MAX_ALIGNMENT);
   if (gateShared > maxSharedMemory) {
@@ -411,7 +412,6 @@ void kickstart(const Options& opts) {
     .append(" Reduce tile shapes or input sizes.");
     throw std::runtime_error(errmsg);
   }
-  constexpr int gateThreads = cute::max(flashmoe::tile::suggest_thread_count<bM, bNGate, bK0, Arch, Element, AccumType>(), bM);
   CHECK_CUDA(cudaFuncSetAttribute(gateKernel, cudaFuncAttributeMaxDynamicSharedMemorySize, gateShared));
   int gbps = 0;
   CHECK_CUDA(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&gbps, gateKernel, gateThreads, gateShared));
@@ -526,7 +526,7 @@ void kickstart(const Options& opts) {
   for (int i = 0; i < world; ++i) {
     epRankToGlobalRank[i] = i;
   }
-  auto gateCtx = flashmoe::initializeGate(bNGate, opts.E, opts.S, stream);
+  auto gateCtx = flashmoe::initializeGate(bNGate, opts.E, roundS, stream);
   auto moeContext = flashmoe::initialize(args, Arch,expertToEpRank.data(), epRankToGlobalRank.data(), stream);
 
   size_t expertBase = static_cast<size_t>(epRank) * numLocalExperts;
@@ -759,7 +759,7 @@ void drive(const int argc, char** argv) {
     .EC = EC,
   };
 
-  using Element = __nv_bfloat16;
+  using Element = __half;
   static_assert(cuda::std::is_same_v<Element, __half> ||
     cuda::std::is_same_v<Element, __nv_bfloat16> ||
     cuda::std::is_same_v<Element, float> ||
@@ -791,10 +791,10 @@ void drive(const int argc, char** argv) {
   constexpr auto bM = cuda::std::is_same_v<Element, double> ? 64 : 128; // hopper, S >= 4096 -> bM = 256
   static_assert(bM >= 1);
   if (S < 1 || (S > bM && S % bM != 0)) {
-    throw std::invalid_argument("S is invalid");
+    throw std::invalid_argument("S is invalid for this benchmark");
   }
-  if (E > 32 && E % 32 != 0) {
-    throw std::invalid_argument("E is invalid for this benchmark");
+  if (E != 8 && E != 16 && E != 32 && E % 32 != 0) {
+    throw std::invalid_argument("E must be 8, 16, 32, or a multiple of 32 for this benchmark");
   }
   switch (E) {
     // Any E, where E % world == 0 holds, is supported, we restrict to 8 here to minimize compilation times.
@@ -832,13 +832,15 @@ void drive(const int argc, char** argv) {
     }
     break;
     default: {
-      if (k > 1) {
-        kickstart<Element, AccumType, arch, bM, bN0, bK0, pS, bN1, bK1, pS, flashmoe::CombineMode::plural, act, mt,
-        flashmoe::GateReductionLevel::multiBlock, 32>(opts);
-      }
-      else {
-        kickstart<Element, AccumType, arch, bM, bN0, bK0, pS, bN1, bK1, pS, flashmoe::CombineMode::single, act, mt,
-        flashmoe::GateReductionLevel::multiBlock, 32>(opts);
+      if (E % 32 == 0) {
+        if (k > 1) {
+          kickstart<Element, AccumType, arch, bM, bN0, bK0, pS, bN1, bK1, pS, flashmoe::CombineMode::plural, act, mt,
+          flashmoe::GateReductionLevel::multiBlock, 32>(opts);
+        }
+        else {
+          kickstart<Element, AccumType, arch, bM, bN0, bK0, pS, bN1, bK1, pS, flashmoe::CombineMode::single, act, mt,
+          flashmoe::GateReductionLevel::multiBlock, 32>(opts);
+        }
       }
     }
   }

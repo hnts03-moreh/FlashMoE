@@ -1,5 +1,3 @@
-import nvshmem.core
-
 from . import router
 from .jit import InitArgs, ContextHandle, Topology, MLPType, ActivationType, DataType, ForwardArgs
 from .cb import get_local_rank
@@ -99,6 +97,8 @@ def finalize(handle: ContextHandle, stream_ptr: int) -> None:
     if SHOULD_FINALIZE_NVSHMEM:
         SHOULD_FINALIZE_NVSHMEM = False
         import cuda.core.experimental as cuda
+        import nvshmem.core as nvshmem
         dev = cuda.Device(get_local_rank())
         dev.sync()
-        nvshmem.core.finalize()
+        if nvshmem.init_status() == nvshmem.InitStatus.STATUS_IS_INITIALIZED:
+            nvshmem.finalize()

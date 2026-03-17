@@ -596,8 +596,8 @@ static void reference_forward(
   auto* __restrict__ ref_interim1 = reinterpret_cast<Element*>(ref_interim1_);
   const auto* __restrict__ expertCounts = reinterpret_cast<const int*>(expertCounts_);
   auto* __restrict__ ref_out = reinterpret_cast<Element*>(ref_out_);
-  CHECK_CUDA(cudaMemsetAsync(ref_out, 0, sizeof(Element) * S * H, stream));
   auto stream = reinterpret_cast<cudaStream_t>(stream_ptr);
+  CHECK_CUDA(cudaMemsetAsync(ref_out, 0, sizeof(Element) * S * H, stream));
   std::vector<int> hCounts (E);
   CHECK_CUDA(cudaMemcpyAsync(hCounts.data(), expertCounts, sizeof(int) * E, cudaMemcpyDeviceToHost, stream));
   cudaStreamSynchronize(stream);

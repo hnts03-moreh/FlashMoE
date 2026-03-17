@@ -304,13 +304,13 @@ namespace flashmoe::processor
           const auto* aP = reinterpret_cast<const Element*>(task.aData);
           const auto* bP = expertUpWeights + expertWeightSize * task.localExpertIdx();
           auto* __restrict__ cP = reinterpret_cast<Element*>(task.cData[0]);
-          const auto* __restrict__ biasP = biasUp + I * task.localExpertIdx();
+          const auto* __restrict__ biasP = biasUp + static_cast<size_t>(I) * task.localExpertIdx();
           if constexpr (mt == MLPMatmulType::vanilla) {
             fGET<TileGEMM0, Activation>(workspace, aP, bP, cP, biasP, task.M(), I, H, task.tileIdx);
           }
           else {
             const auto* bPv = expertUpVWeights + expertWeightSize * task.localExpertIdx();
-            const auto* __restrict__ biasPv = biasUpV + I * task.localExpertIdx();
+            const auto* __restrict__ biasPv = biasUpV + static_cast<size_t>(I) * task.localExpertIdx();
             fGET_gated<TileGEMM0, Activation>(workspace, aP, bP, bPv, cP, biasP, biasPv,
               swishAlpha, swishBeta, task.M(), I, H, task.tileIdx);
           }
@@ -344,7 +344,7 @@ namespace flashmoe::processor
           const auto* aP = reinterpret_cast<const Element*>(task.aData);
           const auto* bP = expertDownWeights + expertWeightSize * task.localExpertIdx();
           auto* __restrict__ cP = reinterpret_cast<Element*>(task.cData[1]);
-          const auto* __restrict__ biasP = biasDown + H * task.localExpertIdx();
+          const auto* __restrict__ biasP = biasDown + static_cast<size_t>(H) * task.localExpertIdx();
           fGET<TileGEMM1, cublasdx::identity>(workspace, aP, bP, cP, biasP, task.M(), H, I, task.tileIdx);
           __syncthreads();
           if (!threadIdx.x) {

@@ -216,7 +216,7 @@ namespace flashmoe {
       throw std::runtime_error(errmsg);
     }
     // maximum tiles that a peer will send to another peer in aggregate.
-    const auto maxPeerTaskTiles = cute::ceil_div(args.EC, args.bM) * args.numExperts;
+    const auto maxPeerTaskTiles = cute::ceil_div(args.EC, args.bM) * args.numLocalExperts;
     if (maxPeerTaskTiles > cuda::std::numeric_limits<uint16_t>::max()) {
       throw std::runtime_error("Max peer task tiles exceeds supported limit. Inform the maintainer.");
     }
@@ -454,6 +454,7 @@ namespace flashmoe {
 #endif
     // free workspace memory
     CHECK_CUDA(cudaFreeAsync(ctx.tQ, stream));
+    CHECK_CUDA(cudaFreeAsync(ctx.stateNumbers, stream));
     CHECK_CUDA(cudaFreeAsync(ctx.GEMM0Staging, stream));
     CHECK_CUDA(cudaFreeAsync(ctx.pel, stream));
     CHECK_CUDA(cudaFreeAsync(ctx.pli, stream));

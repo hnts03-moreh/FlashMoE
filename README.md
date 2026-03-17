@@ -136,13 +136,13 @@ if __name__ == "__main__":
     if args.torch_init:
         import torch.distributed as dist, os
         assert os.environ.get("LOCAL_RANK") is not None, "need to launch with torchrun if set with torch_init=True"
-        world_size = os.environ.get("WORLD")
+        world_size = os.environ.get("WORLD_SIZE")
         local_rank = int(os.environ['LOCAL_RANK'])
         torch.cuda.set_device(local_rank)
         device = torch.device("cuda", local_rank)
         dist.init_process_group(
             backend="cpu:gloo,cuda:nccl",
-            rank=os.environ.get("RANK"),
+            rank=int(os.environ.get("RANK")),
             world_size=world_size,
             device_id=device
         )
@@ -293,7 +293,7 @@ This work would not have been possible without the critical building blocks they
 
 # 📖 Citation
 If you can, please cite as below:
-```
+```bibtex
 @misc{aimuyo2025flashmoe,
       title={FlashMoE: Fast Distributed MoE in a Single Kernel}, 
       author={Osayamen Jonathan Aimuyo and Byungsoo Oh and Rachee Singh},

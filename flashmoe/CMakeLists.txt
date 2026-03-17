@@ -98,7 +98,7 @@ CPMAddPackage(
 #NVSHMEM
 find_package(NVSHMEM REQUIRED)
 
-if(NOT pybind11_ADDED)
+if(NOT COMMAND pybind11_add_module)
     message(FATAL_ERROR "pybind11 not found")
 endif()
 pybind11_add_module(${TARGET_MODULE_NAME} MODULE ${GENERATED_SRC})
@@ -124,6 +124,9 @@ target_link_libraries(${TARGET_MODULE_NAME} PRIVATE CUDA::cudart flashmoe_warnin
 target_compile_definitions(${TARGET_MODULE_NAME} PRIVATE
             FLASHMOE_ARCH=${GPU_ARCH}
 )
+if (NOT DEFINED ENV{NVSHMEM_LIB_HOME})
+    message(FATAL_ERROR "NVSHMEM_LIB_HOME not defined")
+endif ()
 set_target_properties(nvshmem::nvshmem_host PROPERTIES
         IMPORTED_LOCATION_RELEASE "$ENV{NVSHMEM_LIB_HOME}/libnvshmem_host.so"
 )
@@ -131,9 +134,9 @@ target_link_libraries(${TARGET_MODULE_NAME} PRIVATE nvshmem::nvshmem_host nvshme
 # cuBLASDx
 find_package(mathdx REQUIRED COMPONENTS cublasdx CONFIG)
 target_link_libraries(${TARGET_MODULE_NAME} PRIVATE mathdx::cublasdx)
-if(CCCL_ADDED)
+if(TARGET CCCL::CCCL)
         target_link_libraries(${TARGET_MODULE_NAME} PRIVATE CCCL::CCCL)
 endif()
-if(CUTLASS_ADDED)
+if(DEFINED CUTLASS_SOURCE_DIR AND EXISTS "${CUTLASS_SOURCE_DIR}/include")
     target_include_directories(${TARGET_MODULE_NAME} SYSTEM PRIVATE "${CUTLASS_SOURCE_DIR}/include")
 endif()

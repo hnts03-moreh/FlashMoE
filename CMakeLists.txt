@@ -40,6 +40,9 @@ target_link_libraries(flashmoe INTERFACE atomic)
 # NVSHMEM imported target names differ across installs
 if(TARGET nvshmem::nvshmem_host AND TARGET nvshmem::nvshmem_device)
     # WAR for build failure
+  if (NOT DEFINED ENV{NVSHMEM_LIB_HOME})
+    message(FATAL_ERROR "NVSHMEM_LIB_HOME not defined")
+  endif ()
   set_target_properties(nvshmem::nvshmem_host PROPERTIES
     IMPORTED_LOCATION_RELEASE "$ENV{NVSHMEM_LIB_HOME}/libnvshmem_host.so"
   )
@@ -153,7 +156,7 @@ CPMAddPackage(
   GITHUB_REPOSITORY nvidia/cccl
   VERSION 3.1.3
 )
-if(CCCL_ADDED)
+if(TARGET CCCL::CCCL)
   target_link_libraries(flashmoe INTERFACE CCCL::CCCL)
 else()
   message(FATAL_ERROR "Unable to link CCCL")
@@ -166,7 +169,7 @@ CPMAddPackage(
   GIT_TAG v4.4.1
   DOWNLOAD_ONLY TRUE
 )
-if(CUTLASS_ADDED)
+if(DEFINED CUTLASS_SOURCE_DIR AND EXISTS "${CUTLASS_SOURCE_DIR}/include")
   target_include_directories(flashmoe INTERFACE
     ${CUTLASS_SOURCE_DIR}/include
   )
@@ -180,7 +183,7 @@ CPMAddPackage(
         GIT_TAG v3.1.1-c-cpp
         GIT_SHALLOW TRUE
 )
-if(NVTX3_ADDED)
+if(TARGET nvtx3-cpp)
      target_link_libraries(flashmoe INTERFACE nvtx3-cpp)
 endif ()
 # -------------------------------------------------------
@@ -205,10 +208,6 @@ function(FlashMoEAddOptions tgt)
     message(FATAL_ERROR "target '${tgt}' does not exist")
   endif()
 
-  if(NOT TARGET ${tgt})
-    message(FATAL_ERROR "flashmoe_add_options: target '${tgt}' does not exist")
-  endif()
-
   get_target_property(_tgt_archs ${tgt} CUDA_ARCHITECTURES)
   if(NOT _tgt_archs OR _tgt_archs STREQUAL "NOTFOUND")
     set(_tgt_archs "${FLASHMOE_EFFECTIVE_CUDA_ARCHS}")
@@ -219,14 +218,6 @@ function(FlashMoEAddOptions tgt)
 
   # Validation is the main goal here; normalized output is not currently reused.
   flashmoe_normalize_arch_list("${_tgt_archs}" "${_arch_source}" _normalized_tgt_archs)
-
-  target_compile_options(${tgt} INTERFACE
-    $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
-    $<$<COMPILE_LANGUAGE:CUDA>:SHELL:-Xfatbin -compress-all>
-    $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>
-    $<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:CUDA>>:-O0;-g;-G>
-    $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CUDA>>:-O3>
-  )
 
   target_compile_options(${tgt} INTERFACE
     $<$<COMPILE_LANGUAGE:CXX>:

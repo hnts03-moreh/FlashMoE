@@ -29,7 +29,7 @@ namespace flashmoe {
     TQSignal *const tqs = nullptr; // [processors]
     uint *const dispatchSync = nullptr; // [E]
     uint *const gTqHeads = nullptr; // [world, num_local_experts, ecTilesM] = tiles(S)
-    uint *const tileSync = nullptr; // [world, num_local_experts, ecTilesM] = = tiles(S)
+    uint *const tileSync = nullptr; // [world, num_local_experts, ecTilesM] = tiles(S)
     uint *const statusQueue = nullptr; // [processors]
     TPS *const tokenIndices = nullptr; // [E, roundEC]
     uint8_t* const stateNumbers = nullptr; // [processCTAs]

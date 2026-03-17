@@ -26,7 +26,6 @@ class RouterForwardArgs:
     weights: int
     routing: int
     expert_counts: int
-    token_indices: int
     stream_ptr: int
 
     def __init__(self, tokens: int, weights: int, expert_counts: int, stream_ptr: int, *, routing: int = 0):

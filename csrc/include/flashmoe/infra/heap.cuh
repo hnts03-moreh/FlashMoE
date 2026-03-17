@@ -4,7 +4,7 @@
 
 #ifndef FLASHMOE_HEAP_CUH
 #define FLASHMOE_HEAP_CUH
-
+#include <cuda/std/cstddef>
 namespace flashmoe {
   /// Number of communication stages
   constexpr int HEAP_STAGES = 2;

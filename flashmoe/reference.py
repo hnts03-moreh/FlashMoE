@@ -32,8 +32,8 @@ class RefForwardArgs:
     ref_interim0: int
     ref_interim1: int
     ref_out: int
-    expert_up_v: int
-    bias_up_v: int
+    expert_up_v: int = 0
+    bias_up_v: int = 0
 
     def __init__(self,
                  expert_up: int,

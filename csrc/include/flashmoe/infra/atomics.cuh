@@ -67,7 +67,7 @@ namespace flashmoe {
     if (g.compare_exchange_strong(expected, initializing, cuda::memory_order_acquire)) {
       // initialize with my value
       *vals = val;
-      g.store(initialized, cuda::memory_order_release);
+      g.store(participants == 1 ? stale : initialized, cuda::memory_order_release);
       return 0;
     }
     while (expected == initializing) {

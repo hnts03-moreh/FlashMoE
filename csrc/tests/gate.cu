@@ -402,7 +402,7 @@ __host__ __forceinline__
 void kickStart(const int argc, char** argv) {
   using Element = __half;
   using ElementC = float;
-  int S = 2048;
+  int S = 128;
   int H = 4096;
   float rtol = 2e-2f;
   float atol = 2e-3f;

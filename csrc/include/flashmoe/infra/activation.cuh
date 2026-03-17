@@ -9,10 +9,10 @@
 
 namespace flashmoe {
   enum class Activation {
-    identity,
-    relu,
-    gelu,
-    silu // as many as cutlass supports
+    identity = 0,
+    silu = 1,
+    gelu = 2,
+    relu = 3 // keep numeric values aligned with defineAct()
   };
 
   template<int a>
