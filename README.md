@@ -2,15 +2,29 @@
 
 A Completely fused distributed MoE kernel providing high-performance single- and multi-node EP inference 
 and compatible with CUDA graphs. See paper [here](https://arxiv.org/abs/2506.04667).
+
+## Table of Contents
+1. [Motivation](#problem-moe-bottlenecks-in-inference)
+2. [Our Solution](#our-solution-complete-kernel-fusion)
+3. [Installation](#installation)
+4. [QuickStart](#-python-quickstart)
+5. [Performance Results](#-performance-results)
+6. [Running Benchmarks](#run-benchmark-c)
+
 ## Problem: MoE Bottlenecks in Inference
-<div align="center">
-  <img src="assets/FlashMoE_motivation.png" width="2426" alt="Opportunity">
-    <p><em>Figure 1: Opportunity. MoE constitutes 67%-95% of inference runtime.</em></p>
-</div>
-<div align="center">
-  <img src="assets/FlashMoE_tensor_core_idle_time.png" width="1763" alt="">
-<p><em>Figure 2: Tensor core Utilization.</em></p>
-</div>
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="assets/FlashMoE_motivation.png" alt="Opportunity" width="800"/><br>
+      <em>Figure 1: Opportunity. MoE takes 67%-95% of inference runtime.</em>
+    </td>
+    <td align="center">
+      <img src="assets/FlashMoE_tensor_core_idle_time.png" alt="Tensor core utilization" width="600"/><br>
+      <em>Figure 2: Tensor core Utilization. y-axis is percentage of MoE runtime that tensor cores are inactive.<em>
+    </td>
+  </tr>
+</table>
 
 Distributed MoE (DMoE) is a highly dynamic workload that is both compute and communication-intensive, so much so that 
 it takes up to 95% (Figure 1) of the runtime of distributed inference. This data highlights a huge opportunity: 
@@ -26,23 +40,29 @@ necessary preprocessing of inputs or metadata management for downstream compute 
 
 As a result, these systems end up spending only a meager 26% (Figure 2) of their total runtime using the tensor cores.
 
----
-
 ## Our Solution: Complete Kernel Fusion
-<img src="assets/FlashMoE_Arch_title.png" align="right" width="800" style="margin-left: 15px;" alt="Architecture diagram">
+
+<div align="center">
+  <img src="assets/FlashMoE_Arch_title.png" width="700" alt="">
+<p><em>Figure 3: FlashMoE Architecture</em></p>
+</div>
+
 To address these issues, we resort to _complete_ kernel fusion unlocking:
-1. fine-grained overlap of
-communication with computation at a tile granularity
+
+1. fine-grained overlap of communication with computation at a tile granularity
 2. overlap of the aforementioned processing overheads using SM specialization, 
-3. exploiting _task locality_ at scale, where GPU SMs can actualize out-of-order execution of 
-computation or communication tasks whose dependencies are met with minimal delay.
+3. exploiting _task locality_ at scale, where GPU SMs can actualize out-of-order execution of computation or communication tasks whose dependencies are met with minimal delay.
 
 In contrast, existing implementations which are spread out across tens to hundreds of serialized kernels exhibit poor 
 task locality as tasks are strictly executed in the declared (stream) order, enforcing unnecessarily strict 
-interdependencies. A case in point is the idle time that GPUs must pay 
-at synchronizing collectives, AllGather, ReduceScatter, AlltoAll, as they await stragglers.
+interdependencies.
+
+<div style="clear: both;"></div>
+
+A case in point is the idle time that GPUs must pay at synchronizing collectives, e.g. AllGather, ReduceScatter, AlltoAll, as they await stragglers.
 Here, GPUs are unable to execute compute tasks that are functionally independent of this synchronizing communication.
 
+## Our Work
 To that end, we develop **FlashMoE** (Figure 3), the first completely fused Distributed MoE implementation. 
 FlashMoe is a high-throughput, fast and portable system that fuses:
 - MoE Dispatch
@@ -52,7 +72,7 @@ FlashMoe is a high-throughput, fast and portable system that fuses:
 into a *single, tile-pipelined, persistent kernel*. We develop an Operating System (OS) within the kernel which executes concurrently of computation thus hiding latency of 
 processing overhead. 
 
-We develop the system from scratch entirely in **pure CUDA C++**, leaning heavily on 
+We develop the system from scratch entirely in **CUDA C++** and occassional inline PTX, leaning heavily on 
 [cuBLASDx](https://docs.nvidia.com/cuda/cublasdx/) and [NVSHMEM](https://developer.nvidia.com/nvshmem), 
 for high-performance, device-side compute and asynchronous, device-initiated communication, respectively. 
 We also rely heavily on critical infrastructure from [CCCL](https://github.com/nvidia/cccl) and 
@@ -64,9 +84,6 @@ We support
 - SM70 and above GPUs. Boosting compute performance for Hopper and Blackwell is on the roadmap.
 - NVLink and multi-node RDMA (EFA, IBGDA, libfabric as NVSHMEM [supports](https://docs.nvidia.com/nvshmem/release-notes-install-guide/install-guide/abstract.html#hardware-requirements)).
 - FP16, BF16, FP32 (TF32) and FP64. FP8 and even lower precision types are on the roadmap (we welcome contributions!)
-<div style="clear: both;"></div>
-
----
 
 ## Requirements
 - CUDA toolkit
@@ -258,8 +275,6 @@ mpirun -n <world> ./testFlashMoE <num tokens per rank> <token dim> <ffn dim> <nu
 
 ## IDEs
 The codebase integrates well with CLion: open the project at `csrc`.
-
----
 
 ## Contributions
 We welcome them! Submit a PR!
