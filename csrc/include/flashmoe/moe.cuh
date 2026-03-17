@@ -17,6 +17,9 @@
 #include "processor.cuh"
 #include "os.cuh"
 
+namespace flashmoe {
+  __device__ __host__ constexpr int MAX_DISPATCH_BLOCKS = 128;
+}
 namespace flashmoe::moe
 {
   template <
@@ -46,7 +49,7 @@ namespace flashmoe::moe
 
   __host__ __device__ __forceinline__
   constexpr auto dispatchSuperBlockSize(const uint& E) {
-    return cute::ceil_div(128, cute::max(E, 4));
+    return cute::ceil_div(MAX_DISPATCH_BLOCKS, cute::max(E, 4));
   }
 
   __host__ __forceinline__
@@ -95,7 +98,7 @@ namespace flashmoe::moe
     const uint& k, const int& blocksPerSM, const int& numSMs) {
     const auto processorBlocks = (cute::ceil_div(S * k, bM) * ((I / bN0) + (H / bN1))) +
     (cute::ceil_div(S * k, bM) * (H / bN1));
-    const auto dispatchBlocks = dispatchSuperBlockSize(E) * E;
+    const auto dispatchBlocks = min(dispatchSuperBlockSize(E) * E, MAX_DISPATCH_BLOCKS);
     return cute::max(cute::min(cute::max(processorBlocks, dispatchBlocks) + 1, blocksPerSM * numSMs), 2);
   }
   struct KernelArgs {
@@ -185,8 +188,9 @@ namespace flashmoe::moe
       ctx.symHeap, ctx.nLx, roundEC, kArgs.H, sizeof(DataType)
     };
     const auto processors = gridDim.x - 1;
-    const auto superBlockSize = cute::min(dispatchSuperBlockSize(kArgs.E), processors);
-    const auto dispatchBlocks = (processors / superBlockSize) * superBlockSize;
+    const auto dispatchProcessors = (processors * 3) / 4; // 75%
+    const auto superBlockSize = min(dispatchSuperBlockSize(kArgs.E), dispatchProcessors);
+    const auto dispatchBlocks = cuda::round_down(cute::min(superBlockSize * kArgs.E, MAX_DISPATCH_BLOCKS, dispatchProcessors), superBlockSize);
     if (blockIdx.x == gridDim.x - 1) {
       // call OS
       constexpr auto subscriberCount = threads - scheduler::SCHEDULER_COUNT;

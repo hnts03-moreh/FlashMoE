@@ -118,6 +118,12 @@ namespace flashmoe
             rTID[j] = v.tokenIdx;
           }
           // Communicate these tokens
+          // TODO For SM 90 and above, optimize the below using _TMA + warp splitting_
+          // Assume a CTA of 4 warps needs to copy 8 tokens
+          // Currently, _all warps_ in the CTA cooperate to copy each token, thus taking #tokens = 8 iterations
+          // With warp splitting, each warp uses TMA to copy a single token (GMEM->SMEM->GMEM)
+          // so that, for this example, it would take # tokens / # warps == 2 iterations.
+          // Technically, a single thread could issue the TMA call but a warp is preferred to sidestep divergence
           #pragma unroll
           for (int j = 0; j < batch; ++j) {
             const auto tokenIdx = rTID[j];

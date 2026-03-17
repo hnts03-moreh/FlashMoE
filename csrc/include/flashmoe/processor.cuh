@@ -62,6 +62,7 @@ namespace flashmoe::processor
       d_frag(i) = storeConv(act(c_frag(i) + loadConv(d_frag(i))));
     });
     auto gC = tile::getC<BM{}, BN{}, cublasdx::arrangement_of_v_c<BLAS>>(c, M, N, cute::select<0, 1>(tileCoord));
+    // TODO For Optimize the below copy, TMA may help
     // rmem -> smem
     auto sC = cublasdx::make_tensor(static_cast<ElementC*>(workspace), BLAS::suggest_layout_smem_c());
     __syncthreads();
@@ -138,6 +139,7 @@ namespace flashmoe::processor
       d_frag(i) = storeConv(cv_frag(i) * loadConv(d_frag(i)));
     });
     auto gC = tile::getC<BM{}, BN{}, cublasdx::arrangement_of_v_c<BLAS>>(c, M, N, cute::select<0, 1>(tileCoord));
+    // TODO For Optimize the below copy, TMA may help
     // rmem -> smem
     auto sC = cublasdx::make_tensor(reinterpret_cast<ElementC*>(workspace), BLAS::suggest_layout_smem_c());
     __syncthreads();

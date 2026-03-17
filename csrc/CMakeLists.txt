@@ -208,9 +208,6 @@ function(flash_target_lto tgt)
             $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CUDA>>:-Xptxas -v; -Xcudafe --display_error_number>
             $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CUDA>>:SHELL:-gencode=arch=compute_${ARCH_TAG},code=lto_${ARCH_TAG}>
     )
-    target_link_options(${tgt} PRIVATE
-            $<$<CONFIG:Release>:$<DEVICE_LINK:-Xptxas -v>>
-    )
     target_compile_definitions(${tgt} PRIVATE
             FLASHMOE_ARCH=${GPU_ARCH}
             NUM_SMS=${CUDA_NUM_SMS}
@@ -227,7 +224,7 @@ set_target_properties(testFlashMoE PROPERTIES
 flash_target_lto(testFlashMoE)
 # WAR for build failure
 set_target_properties(nvshmem::nvshmem_host PROPERTIES
-        IMPORTED_LOCATION_RELEASE "$ENV{NVSHMEM_LIB_HOME}/libnvshmem_host.so.3"
+        IMPORTED_LOCATION_RELEASE "$ENV{NVSHMEM_LIB_HOME}/libnvshmem_host.so"
 )
 target_link_libraries(testFlashMoE PRIVATE nvshmem::nvshmem_host nvshmem::nvshmem_device)
 find_package(MPI REQUIRED COMPONENTS CXX)
