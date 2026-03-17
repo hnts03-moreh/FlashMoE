@@ -1,145 +1,308 @@
-# FlashDMoE: Fast Distributed MoE in a Single Kernel
+# FlashMoE: Fast Distributed MoE in a Single Kernel [NeurIPS'25]
+FlashMoE is the first fully fused Distributed MoE system that achieves high tensor core utilization
+by eliminating kernel boundaries and enabling fine-grained overlap of communication and computation.
+We provide high-performance single- and multi-node EP inference 
+and work seamlessly with CUDA graphs. See paper [here](https://arxiv.org/abs/2506.04667).
 
-🚧 Note we are currently making numerous changes in preparation for our first stable release v0.1.0. If you want to use this work for production use-cases, kindly wait till the release.
+## Table of Contents
+1. [Motivation](#problem-moe-bottlenecks-in-inference)
+2. [Our Solution](#our-solution-complete-kernel-fusion)
+3. [Installation](#installation)
+4. [QuickStart](#-python-quickstart)
+5. [Performance Results](#-performance-results)
+6. [Running Benchmarks](#run-benchmark-c)
 
+## Problem: MoE Bottlenecks in Inference
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="assets/FlashMoE_motivation.png" alt="Opportunity" width="800"/><br>
+      <em>Figure 1: Opportunity. MoE takes 67%-95% of inference runtime.</em>
+    </td>
+    <td align="center">
+      <img src="assets/FlashMoE_tensor_core_idle_time.png" alt="Tensor core utilization" width="600"/><br>
+      <em>Figure 2: Tensor core Utilization. y-axis is percentage of MoE runtime that tensor cores are inactive.</em>
+    </td>
+  </tr>
+</table>
+
+Distributed Mixture-of-Experts (DMoE) is an extremely demanding workload, both compute- and communication-intensive,
+accounting for up to **95% of total inference runtime** (Figure 1). 
+
+This makes DMoE the primary bottleneck in distributed inference and a critical target for optimization.
+
+However, existing implementations leave significant performance untapped, achieving only **26% tensor core utilization** (Figure 2).
+
+We identify three key sources of inefficiency:
+
+1. **Exposed communication on the critical path**  
+2. **Straggler-induced delays** from load imbalance  
+3. **System overheads** from dynamic token routing (e.g., metadata management, inputs preprocessing for compute operators like GroupedGEMM)
+
+As a result, GPUs spend the majority of time stalled, with only **26% of runtime utilizing tensor cores**.
+
+## Our Solution: Complete Kernel Fusion
+
+<div align="center">
+  <img src="assets/FlashMoE_Arch_title.png" width="700" alt="">
+<p><em>Figure 3: FlashMoE Architecture</em></p>
+</div>
+
+We address these inefficiencies through **complete kernel fusion**, enabling:
+
+1. **Fine-grained overlap of communication and computation** at tile granularity  
+2. **Latency hiding of preprocessing and system overheads** via SM specialization  
+3. **Exploitation of task locality at scale**, allowing SMs to execute ready tasks out-of-order, minimizing idle and boosting resource utilization.
+
+In contrast, existing implementations rely on tens to hundreds of serialized kernels, enforcing strict execution order
+and limiting _task locality_.
+
+This results in unnecessary stalls—for example, during collective synchronization (AllGather, ReduceScatter, AllToAll),
+where GPUs idle waiting for stragglers instead of executing independent compute tasks.
+
+## Our Work
+We present **FlashMoE** (Figure 3), the first **fully fused Distributed MoE system**.
+
+FlashMoE is a high-throughput, portable system that fuses:
+- MoE Dispatch  
+- Expert Computation (Gated MLP or standard MLP)  
+- MoE Combine  
+
+into a **single tile-pipelined persistent kernel**.
+
+At its core, FlashMoE embeds an **Operating System within the kernel**, enabling concurrent scheduling and execution,
+thereby hiding system and communication latency. 
+
+FlashMoE is built from the ground up in **CUDA C++**, with selective inline PTX.
+It leverages:
+
+- [cuBLASDx](https://docs.nvidia.com/cuda/cublasdx/) for device-side high-performance compute  
+- [NVSHMEM](https://developer.nvidia.com/nvshmem) for asynchronous, device-initiated communication  
+- [CCCL](https://github.com/nvidia/cccl) and [CUTLASS](https://github.com/NVIDIA/cutlass) for critical infrastructure
+
+### 🏎️ Portability
+
+We support 
+- SM70 and above GPUs. Boosting compute performance for Hopper and Blackwell is on the roadmap.
+- NVLink and multi-node RDMA (EFA, IBGDA, libfabric as NVSHMEM [supports](https://docs.nvidia.com/nvshmem/release-notes-install-guide/install-guide/abstract.html#hardware-requirements)).
+- FP16, BF16, FP32 (TF32) and FP64. FP8 and even lower precision types are on the roadmap (we welcome contributions!)
+
+## Requirements
+- CUDA toolkit
+- C++20
+- ninja (`sudo apt install ninja-build`)
+- CMake (>= 3.28)
+
+### Hardware Requirements
+- GPU architecture of at least SM 70. 
+- A P2P GPU interconnect (NVLink, some PCIe and GPUDirect RDMA). NVSHMEM will fail if this criterion is not met.
+
+## Installation
+### cuBLASDx
+- Download from [here](https://developer.nvidia.com/cublasdx-downloads) and save in `<your_directory>`, e.g `~/.local`.
+- export `MATHDX_ROOT=<your_directory>/nvidia-<...>/mathdx/yy.mm/`
+
+### NVSHMEM
+- Install as directed [here](https://developer.nvidia.com/nvshmem-downloads).
+- export `NVSHMEM_LIB_HOME=/usr/lib/x86_64-linux-gnu/nvshmem/<12 or 13>`. Do confirm this directory exists!
+
+> 👉 Tip: add `MATHDX_ROOT=...` and `NVSHMEM_LIB_HOME=...` to `.bashrc`
+
+## 🚀 Python QuickStart
+```bash
+pip install "git+https://github.com/osayamenja/FlashMoE.git#egg=flashmoe[cu12]" # or cu13
+```
+## Using Python API
+```python
+# quick.py
+import argparse
+import cuda.core.experimental as cuda
+import flashmoe
+import torch
+
+device_id = flashmoe.get_local_rank()
+dev = cuda.Device(device_id)
+dev.set_current()
+stream = dev.create_stream()
+stream_ptr = int(stream.handle)
+arch = int(dev.arch) * 10
+    
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--torch-init", action="store_true")
+    args = parser.parse_args()
+    
+    if args.torch_init:
+        import torch.distributed as dist, os
+        assert os.environ.get("LOCAL_RANK") is not None, "need to launch with torchrun if set with torch_init=True"
+        world_size = os.environ.get("WORLD_SIZE")
+        local_rank = int(os.environ['LOCAL_RANK'])
+        torch.cuda.set_device(local_rank)
+        device = torch.device("cuda", local_rank)
+        dist.init_process_group(
+            backend="cpu:gloo,cuda:nccl",
+            rank=int(os.environ.get("RANK")),
+            world_size=world_size,
+            device_id=device
+        )
+        
+    # Llama4-Scout-17B-16E shapes
+    tokens_per_rank = 1024
+    token_dim = 5120
+    ffn_size = 8192
+    num_experts = 16
+    k = 1
+    
+    # define model config
+    mlp_type = flashmoe.MLPType.GATED # Gated MLP
+    data_type = flashmoe.DataType.BF16
+    act_type = flashmoe.ActivationType.SILU
+    
+    init_args = flashmoe.InitArgs(data_type=data_type,
+        mlp_type=mlp_type, act_type=act_type,
+        tokens_per_rank=tokens_per_rank, token_dim=token_dim,
+        ffn_size=ffn_size, num_experts=num_experts,
+        top_k=k, gpu_arch=arch, stream_ptr=stream_ptr, device_id=device_id)
+    
+    # initialize flashmoe and fused router
+    flash_handle = flashmoe.initialize(init_args)
+    router_handle = flashmoe.router.initialize(init_args)
+
+    # call forward of fused router
+    router_forward_args = ... # see quickstart.py for an example
+    flashmoe.router.forward(router_handle, flash_handle, router_forward_args)
+    # call forward of FlashMoE
+    flashmoe_forward_args = ... # see quickstart.py for an example
+    flashmoe.forward(flash_handle, flashmoe_forward_args) # single kernel for Dispatch + Experts + Combine
+    
+    # call finalize
+    flashmoe.finalize(flash_handle, stream_ptr)
+    flashmoe.router.finalize(router_handle, stream_ptr)
+    stream.close()
+    if args.torch_init:
+        import torch.distributed as dist
+        dist.destroy_process_group()
+```
+### Running the Python Program
+With torchrun:
+```shell
+torchrun --nproc_per_node=<number of GPUs> quick.py --torch-init
+```
+With MPI:
+```shell
+mpiexec -n <number of GPUs> python3 quick.py
+```
+
+## Use C++ API (header-only)
+Add the following to your `CMakeLists.txt`
+```CMake
+set(CPM_SOURCE_CACHE
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cache"
+        CACHE PATH "Shared CPM source cache"
+)
+set(CMAKE_CUDA_ARCHITECTURES "native") # or your own architecture
+
+#...
+CPMAddPackage(
+  NAME flashmoe
+  GITHUB_REPOSITORY osayamenja/flashmoe
+  GIT_TAG main
+)
+
+target_link_libraries(app PRIVATE flashmoe::flashmoe)
+
+FlashMoESetRDC(app)
+FlashMoEAddOptions(app)
+```
+and include the header file like below. See `csrc/tests/flashmoe.cu` for more usage details.
+```cpp
+#include <flashmoe/flashmoe.cuh>
+```
 ---
 
-## 🗞️ News
-
-- **Sept 18, 2025** — **FlashDMoE** will appear at NeurIPS'25 (main track)! 
-- **June 5, 2025** — ⚡️Introducing **FlashDMoE**, a fused GPU kernel for distributed MoE execution.  
-
----
-
-## 🧠 Overview
-
-**FlashMoE**, Flash for short, is a high-throughput, portable GPU kernel that fuses the following **Distributed Mixture-of-Experts (DMoE)** operations:
-- Gate
-- MoE Dispatch
-- Expert FFN (GEMM),
-- MoE Combine
-
-...into a *single, tile-pipelined, persistent kernel*.
+### ✅ Roadmap
+- [ ] Improve MMA for Hopper (WGMMA) and Blackwell (UTCMMA).
+- [ ] FP8 support
+- [ ] Shared experts
+- [ ] AMD support
 
 ---
 
 ## 📊 Performance Results
-We compare against [COMET](https://github.com/bytedance/flux) (MLSys '25), [FasterMoE](https://github.com/laekov/fastmoe) (PPoPP '22), [Megatron-CUTLASS, and Megatron-TE](https://github.com/NVIDIA/Megatron-LM/tree/f32b2731acddfb9fe9a91198b27d947286d9d629/megatron/core/transformer/moe).
+- We measure with the EP+DP parallelism scheme.
+- We compare against [COMET](https://github.com/bytedance/flux) (MLSys '25), [Megatron-LM](https://github.com/NVIDIA/Megatron-LM), and 
+[Triton-Distributed](https://github.com/ByteDance-Seed/Triton-distributed). 
+- We measure a single layer's execution only. 
+- For every model we evaluated, 
+we use model shapes and data types as defined in its corresponding `config.json` on HuggingFace. 
+- We **do not** execute any shared experts.
+> 👉 On frontier MoE models, FlashMoE gives up to 5x speedup and 69% increase in tensor core utilization compared to SOTA baselines.
+
+## Gated MLP
+
 <div align="center">
-  <img src="plots/sm_util.png" alt="Figure 1" width="500"/>
-  <p><em>GPU SM Utilization</em></p>
+  <img src="assets/FlashMoE_A100_single_node-2.png" width="4101" alt="">
+<p><em>Figure 4: Up to 5.1x faster MoE layer runtime on Qwen-30B with single-node EP</em></p>
 </div>
 
-| Weak Scaling | Overlap Efficiency |
-|:------:|:------:|
-| <img src="plots/scaling_gpus_8.png" width="400"/> | <img src="plots/overlap_efficiency_8.png" width="400"/> |
+---
 
-| Expert Scalability on 4 H100s | Expert Scalability on 8 H100s |
-|:------:|:------:|
-| <img src="plots/scaling_experts.png" width="400"/> | <img src="plots/scaling_experts_8.png" width="400"/> |
-| **Token Scaling on 4 H100s** | **Token Scaling on 8 H100s** |
-| <img src="plots/scaling_tokens.png" width="400"/> | <img src="plots/scaling_tokens_8.png" width="400"/> |
-
-Compared to SOTA baselines, Flash: 
-1. increases GPU utilization by up to **9x**, 
-2. reduces E2E layer latency by up to **6x**, 
-3. attains **4x** better weak scaling efficiency
+## Conventional MLP
+<div align="center">
+  <img src="assets/FlashMoE_A100_vs_COMET.png" width="2946" alt="">
+<p><em>Figure 5: Up to 2.6x faster runtime DeepSeek-V2-Lite</em></p>
+</div>
 
 ---
 
-# Run
-## Requirements
-- Install CPM as [so](https://github.com/cpm-cmake/CPM.cmake?tab=readme-ov-file#adding-cpm). Make sure to create the `cmake` directory as they recommend.
-- Install CMake.
-- Install [Boost C++ libraries](https://packages.debian.org/stable/libboost-all-dev)
-  ```bash
-  sudo apt-get install -y libboost-all-dev
-  ```
-- (Optional but recommended) Install ninja
+## Multi-node (libfabric on Slingshot 11)
+<div align="center">
+  <img src="assets/FlashMoE_A100_multi_node.png" width="5592" alt="">
+<p><em>Figure 6: Up to 3x speedup on Llama4-Scout for multi-node EP!</em></p>
+</div>
 
-### Building NVSHMEM
-For peak performance, (see [here](https://www.nvidia.com/en-us/on-demand/session/gtc24-s61339/)) we *highly* recommend building NVSHMEM from scratch and setting `-DNVSHMEM_ENABLE_ALL_DEVICE_INLINING=1`. The prepackaged deb binary available [here](https://docs.nvidia.com/nvshmem/release-notes-install-guide/install-guide/nvshmem-install-proc.html) does not have that variable set.
-- For multi-node: install these software dependencies [here](https://docs.nvidia.com/nvshmem/release-notes-install-guide/install-guide/abstract.html#software-requirements)
-- Go to the NVSHMEM Download page and get the `Open Source Packages`.
-- Decompress the file appropriately
-- `cd nvshmem && mkdir build && cd build`
-- `export NVHSMEM_PREFIX=<to the installation directory>`
-- For multi-node: Set other appropriate transport environment variables from [here](https://docs.nvidia.com/nvshmem/release-notes-install-guide/install-guide/nvshmem-install-proc.html#other-distributions)
-- To fix a build bug: `export CUDAFLAGS='-fpermissive' CXXFLAGS='-fpermissive'`
-- Run `cmake -S.. -B. -DNVSHMEM_ENABLE_ALL_DEVICE_INLINING=1 -Wno-dev`
-- Run `make -j install`
+--- 
 
-## 📦 Installation
-You can install FlashMoE from source using pip:
-```bash
-git clone https://github.com/osayamenja/FlashMoE.git
-cd FlashMoE
-pip install -e . --no-build-isolation
+## H100s
+<div align="center">
+  <img src="assets/FlashMoE_H100_single_node.png" width="2940" alt="">
+<p><em>Figure 7: Up to 2.5x speedup on H100s.</em></p>
+</div>
+
+---
+
+## Run Benchmark (C++)
+```shell
+cd csrc
+mkdir cmake-build-release && cd cmake-build-release
+cmake -DCMAKE_BUILD_TYPE=Release -Wno-dev -G Ninja -S.. -B.
+cmake --build . --target testFlashMoE --parallel
+export NVSHMEM_BOOTSTRAP=MPI
+mpirun -n <world> ./testFlashMoE <num tokens per rank> <token dim> <ffn dim> <num experts total> <top k>
 ```
 
-> 💡 Note: FlashMoE requires a CUDA-capable GPU and an NVSHMEM installation.
-> Ensure that `CUDA_HOME` and `NVSHMEM_HOME` are correctly set before installation.
-
-If dependencies such as `cutlass` or `cccl` are missing, the setup script will attempt to download or guide you through installation.
-
-## ⚙️ Configuration
-FlashMoE uses compile-time configuration for key parameters (e.g., `expert_top_k`, `num_experts`, `sequence_len`).
-
-Before (re)building, edit the configuration file:
-```bash
-vim csrc/kleos_config.json
-```
-Then reinstall:
-```bash
-pip install -e . --no-build-isolation
-```
-
-## 🚀 Usage
-Once installed, you can import and run FlashMoE directly in Python:
-```py
-import flashmoe
-
-# Run on a single GPU
-flashmoe.run_moe()
-
-# Run distributed (multi-GPU)
-flashmoe.run_moe(n_processes=4)
-```
-
-## (Optional) Build from CMake and Run
-1. cd `csrc`
-2. mkdir `cmake-build-release` && cd `cmake-build-release`
-3. Configure `kleos_config.json` as needed.
-4. Run `cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM=<path to ninja> -Wno-dev -G Ninja -S .. -B .`
-5. Run `cmake --build . --target csrc -j`
-> 💡 Note: Any changes to `kleos_config.json` require repeating steps 4–5. This exposes compile-time parameters as *static* constants, dramatically reducing build times (~1 hour → ~1 min) and enabling compiler optimizations. See *Why static constants help* below for details.
-6. Execute
-
-Single Node
-```bash
-nvshmrun -n <number of processes> -ppn <processes per node> ./csrc
-```
-
-Multi node (SLURM)
-```bash
-srun -n <number of processes> ./csrc
-```
-
-<details> <summary>Why static constants help</summary>
-This intermediate stage is a compilation and performance optimization, as it exposes those parameters in the json file as _static_ constants within the application. Doing so reduces build times by about 60x (1 hour → ~1 min) as it allows for sidestepping exhaustive template instantiations, given the template parameters are known a priori. On the other hand, static constants allows for (1) loop unrolling, which we heavily adopt, (2) optimized mathematical operations, modular arithmetic for example, (3) code path elimination via `if constexpr` and (4) compile-time computations for address calculations which present recurrently in tensor indexing. We leverage all of these and some more additional compile-time optimizations in Flash.
-</details>
 
 ## IDEs
-Alternatively, the codebase integrates well with CLion, which automates the build and run processes. 
-Just open the project at `csrc` and CLion will automatically detect the `CMakeLists.txt` file.
+The codebase integrates well with CLion: open the project at `csrc`.
 
----
+## Contributions
+We welcome them! Submit a PR!
+
+## Acknowledgements
+Super grateful to the amazing folks behind
+- cuBLASDx 
+- CUTLASS
+- NVSHMEM
+- CCCL
+
+This work would not have been possible without the critical building blocks they provide.
 
 # 📖 Citation
-If you use any part of FlashDMoE in your research, please cite:
-```
-@misc{aimuyo2025flashdmoe,
-      title={FlashDMoE: Fast Distributed MoE in a Single Kernel}, 
+If you can, please cite as below:
+```bibtex
+@misc{aimuyo2025flashmoe,
+      title={FlashMoE: Fast Distributed MoE in a Single Kernel}, 
       author={Osayamen Jonathan Aimuyo and Byungsoo Oh and Rachee Singh},
       year={2025},
       eprint={2506.04667},
@@ -148,8 +311,3 @@ If you use any part of FlashDMoE in your research, please cite:
       url={https://arxiv.org/abs/2506.04667}, 
 }
 ```
-
-
-## ⚖️ License
-
-This project is licensed under the BSD 3-Clause License. See [`LICENSE`](./LICENSE) for full terms.
