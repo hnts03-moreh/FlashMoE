@@ -5,13 +5,8 @@ and compatible with CUDA graphs. See paper [here](https://arxiv.org/abs/2506.046
 ## Problem: MoE Bottlenecks in Inference
 <div style="display: flex; justify-content: center; gap: 20px;">
   <div style="text-align: center;">
-    <img src="plots/FlashMoE_motivation.png" width="500" alt="Opportunity">
+    <img src="plots/FlashMoE_motivation.png" width="2426" alt="Opportunity">
     <div><em>Figure 1: Opportunity. MoE constitutes 67%-95% of inference runtime</em></div>
-  </div>
-
-  <div style="text-align: center;">
-    <img src="plots/FlashMoE_tensor_core_idle_time.png" width="485" alt="Tensor Core Utilization">
-    <div><em>Figure 1: y-axis denotes the total portion of t.</em></div>
   </div>
 </div>
 
@@ -184,8 +179,13 @@ and include the header file like below. See `csrc/tests/flashmoe.cu` for more us
 we use model shapes and data types as defined in its corresponding `config.json` on HuggingFace. 
 - We **do not** execute any shared experts.
 > 👉 On frontier MoE models, FlashMoE gives up to 5x lower runtime and 69% increase in tensor core utilization compared to SOTA baselines.
+<div style="text-align: center;">
+  <img src="plots/FlashMoE_tensor_core_idle_time.png" width="700" alt="">
+<p><em>Figure 2: Up to 5.1x faster MoE layer runtime on Qwen-30B with single-node EP</em></p>
+</div>
 
 ## Gated MLP
+
 <div style="text-align: center;">
   <img src="plots/FlashMoE_A100_single_node.png" width="700" alt="">
 <p><em>Figure 2: Up to 5.1x faster MoE layer runtime on Qwen-30B with single-node EP</em></p>
@@ -211,7 +211,7 @@ we use model shapes and data types as defined in its corresponding `config.json`
 
 ## H100s
 <div style="text-align: center;">
-  <img src="plots/FlashMoE_H100_single_node.png" width="600" alt="">
+  <img src="plots/FlashMoE_H100_single_node.png" width="1500" alt="">
 <p><em>Figure 5: Up to 2.5x speedup on H100s.</em></p>
 </div>
 
