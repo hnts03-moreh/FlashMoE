@@ -3,7 +3,7 @@
 A Completely fused distributed MoE kernel providing high-performance single- and multi-node EP inference 
 and compatible with CUDA graphs. See paper [here](https://arxiv.org/abs/2506.04667).
 ## Problem: MoE Bottlenecks in Inference
-<div style="text-align: center;">
+<div align="center">
   <img src="plots/FlashMoE_motivation.png" width="2426" alt="Opportunity">
     <p><em>Figure 1: Opportunity. MoE constitutes 67%-95% of inference runtime</em></p>
 </div>
@@ -180,7 +180,7 @@ we use model shapes and data types as defined in its corresponding `config.json`
 > 👉 On frontier MoE models, FlashMoE gives up to 5x lower runtime and 69% increase in tensor core utilization compared to SOTA baselines.
 
 ## Tensor Core Utilization
-<div style="text-align: center;">
+<div align="center">
   <img src="plots/FlashMoE_tensor_core_idle_time.png" width="1763" alt="">
 <p><em>Figure 2: Up to 5.1x faster MoE layer runtime on Qwen-30B with single-node EP</em></p>
 </div>
