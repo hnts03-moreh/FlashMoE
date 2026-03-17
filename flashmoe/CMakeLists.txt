@@ -125,7 +125,7 @@ target_compile_definitions(${TARGET_MODULE_NAME} PRIVATE
             FLASHMOE_ARCH=${GPU_ARCH}
 )
 set_target_properties(nvshmem::nvshmem_host PROPERTIES
-        IMPORTED_LOCATION_RELEASE "$ENV{NVSHMEM_LIB_HOME}/libnvshmem_host.so.3"
+        IMPORTED_LOCATION_RELEASE "$ENV{NVSHMEM_LIB_HOME}/libnvshmem_host.so"
 )
 target_link_libraries(${TARGET_MODULE_NAME} PRIVATE nvshmem::nvshmem_host nvshmem::nvshmem_device)
 # cuBLASDx

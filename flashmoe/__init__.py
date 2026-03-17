@@ -95,7 +95,9 @@ def forward(handle: ContextHandle, args: ForwardArgs) -> None:
 
 def finalize(handle: ContextHandle, stream_ptr: int) -> None:
     handle.mod.finalize(handle.context, stream_ptr)
+    global SHOULD_FINALIZE_NVSHMEM
     if SHOULD_FINALIZE_NVSHMEM:
+        SHOULD_FINALIZE_NVSHMEM = False
         import cuda.core.experimental as cuda
         dev = cuda.Device(get_local_rank())
         dev.sync()

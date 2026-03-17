@@ -181,7 +181,7 @@ CPMAddPackage(
         GIT_SHALLOW TRUE
 )
 if(NVTX3_ADDED)
-     target_link_libraries(flashmoe PRIVATE nvtx3-cpp)
+     target_link_libraries(flashmoe INTERFACE nvtx3-cpp)
 endif ()
 # -------------------------------------------------------
 # NVSHMEM requires relocatable device code
@@ -220,7 +220,7 @@ function(FlashMoEAddOptions tgt)
   # Validation is the main goal here; normalized output is not currently reused.
   flashmoe_normalize_arch_list("${_tgt_archs}" "${_arch_source}" _normalized_tgt_archs)
 
-  target_compile_options(${tgt} PRIVATE
+  target_compile_options(${tgt} INTERFACE
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
     $<$<COMPILE_LANGUAGE:CUDA>:SHELL:-Xfatbin -compress-all>
     $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>
@@ -228,7 +228,7 @@ function(FlashMoEAddOptions tgt)
     $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CUDA>>:-O3>
   )
 
-  target_compile_options(${tgt} PRIVATE
+  target_compile_options(${tgt} INTERFACE
     $<$<COMPILE_LANGUAGE:CXX>:
         -Wall -Wextra
         -fno-strict-aliasing

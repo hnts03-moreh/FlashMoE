@@ -1,13 +1,5 @@
 from .jit import ContextHandle, InitArgs, _get_compiled
 
-class RouterInitArgs:
-    device_id: int
-    stream_ptr: int
-
-    def __init__(self, device_id, stream_ptr):
-        self.device_id = device_id
-        self.stream_ptr = stream_ptr
-
 def initialize(arg: InitArgs, return_logits: bool = False) -> ContextHandle:
     from .bindings import gate_bindings
     mod_prefix = "flashmoe_router"

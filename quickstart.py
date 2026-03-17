@@ -131,7 +131,7 @@ def run_fused_moe_forward_w_correctness_check(tokens_per_rank: int,
     ref_input = torch.empty((tokens_per_rank, token_dim), device=device_id, dtype=t_dtype).contiguous()
     ref_interim0 = torch.empty((tokens_per_rank, ffn_size), device=device_id, dtype=t_dtype).contiguous()
     ref_interim1 = torch.empty((tokens_per_rank, token_dim), device=device_id, dtype=t_dtype).contiguous()
-    ref_out = torch.empty((tokens_per_rank, token_dim), device=device_id, dtype=t_dtype).contiguous()
+    ref_out = torch.zeros((tokens_per_rank, token_dim), device=device_id, dtype=t_dtype).contiguous()
     rea = flashmoe.reference.RefForwardArgs(
         expert_up=expert_up.data_ptr(),
         expert_down=expert_down.data_ptr(),

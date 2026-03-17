@@ -7,7 +7,7 @@
  */
 
 //
-// Created by oja7 on 3/11/25.
+// Created by Osayamen on 3/11/25.
 //
 
 #ifndef TELEMETRY_CUH

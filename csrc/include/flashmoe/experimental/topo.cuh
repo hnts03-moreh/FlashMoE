@@ -7,7 +7,7 @@
  */
 
 //
-// Created by oja7 on 9/19/24.
+// Created by Osayamen on 9/19/24.
 //
 
 #ifndef TOPO_CUH

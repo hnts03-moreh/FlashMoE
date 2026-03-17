@@ -7,7 +7,7 @@
  */
 
 //
-// Created by oja7 on 11/25/24.
+// Created by Osayamen on 11/25/24.
 //
 
 #ifndef GATE_CUH

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, Osayamen Jonathan Aimuyo
+ * Copyright (c) 2026, Osayamen Jonathan Aimuyo
  * All rights reserved.
  *
  * This file is part of the Flashmoe Project and is licensed under the BSD 3-Clause License.
@@ -7,7 +7,7 @@
  */
 
 //
-// Created by oja7 on 11/17/24.
+// Created by Osayamen on 11/17/24.
 //
 
 #ifndef SCHEDULER_CUH

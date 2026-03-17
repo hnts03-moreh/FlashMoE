@@ -1,22 +1,56 @@
 # FlashMoE: Fast Distributed MoE in a Single Kernel [NeurIPS'25]
 
-Completely fused distributed MoE providing high-performance single- and multi-node EP inference. 
-Also compatible with CUDA graphs! See paper [here](https://arxiv.org/abs/2506.04667).
+A Completely fused distributed MoE kernel providing high-performance single- and multi-node EP inference 
+and compatible with CUDA graphs. See paper [here](https://arxiv.org/abs/2506.04667).
+## Problem: MoE Bottlenecks in Inference
+<div style="display: flex; justify-content: center; gap: 20px;">
+  <div style="text-align: center;">
+    <img src="plots/FlashMoE_motivation.png" width="500" alt="Opportunity">
+    <div><em>Figure 1: Opportunity. MoE constitutes 67%-95% of inference runtime</em></div>
+  </div>
 
+  <div style="text-align: center;">
+    <img src="plots/FlashMoE_tensor_core_idle_time.png" width="485" alt="Tensor Core Utilization">
+    <div><em>Figure 1: y-axis denotes the total portion of t.</em></div>
+  </div>
+</div>
+
+This text will wrap around the image on the left side. Useful for clean layouts in documentation.
+
+## Our Solution
+
+Distributed MoE is notorious for 
+
+**FlashMoE** is a high-throughput, fast and portable GPU kernel that fuses the following **Distributed Mixture-of-Experts (DMoE)** operations:
+- MoE Dispatch
+- Expert computation (Gated MLP or conventional MLP)
+- MoE Combine
+
+into a *single, tile-pipelined, persistent kernel*.
+
+It is written from scratch entirely in **pure CUDA C++**, leaning heavily on 
+[cuBLASDx](https://docs.nvidia.com/cuda/cublasdx/) and [NVSHMEM](https://developer.nvidia.com/nvshmem), 
+for compute and communication, respectively.
+
+### 🏎️ Portability
+
+we support 
+- $\geq$ SM70 GPUs. Boosting compute performance for Hopper and Blackwell is on the roadmap.
+- NVLink and multi-node RDMA (EFA, IBGDA, libfabric as NVSHMEM [supports](https://docs.nvidia.com/nvshmem/release-notes-install-guide/install-guide/abstract.html#hardware-requirements)).
+- FP16, BF16, FP32 (TF32), FP64.
 ---
 
-## 🗞️ News
-
-- **March 2026**    — **FlashMoE** v0.1.0 is out! 
-- **Sept  2025** — **FlashMoE** will appear at NeurIPS'25 (main track)! 
-- **June 2025**  — ⚡️Introducing **FlashMoE** 
-
----
 ## Requirements
-- CUDA toolkit 
+- CUDA toolkit
+- C++20
 - ninja (`sudo apt install ninja-build`)
-- CMake
+- CMake (>= 3.28)
 
+### Hardware Requirements
+- GPU Architecture $\geq$ SM 70. 
+- A P2P GPU interconnect (NVLink, some PCIe and GPUDirect RDMA). NVSHMEM will fail if this criterion is not met.
+
+## Installation
 ### Install cuBLASDx
 - Download from [here](https://developer.nvidia.com/cublasdx-downloads) and save in `<your_directory>`, e.g `~/.local`.
 - export `MATHDX_ROOT=<your_directory>/nvidia-<...>/mathdx/yy.mm/`
@@ -28,9 +62,8 @@ Also compatible with CUDA graphs! See paper [here](https://arxiv.org/abs/2506.04
 > 👉 Tip: add `MATHDX_ROOT=...` and `NVSHMEM_LIB_HOME=...` to `.bashrc`
 
 ## 🚀 Python QuickStart
-Create a `uv` venv and install `nvshmem`
 ```bash
-uv venv flashmoe && flashmoe/bin/activate && uv pip install nvshmem4py-cu12 # or nvshmem4py-cu12
+uv venv flashmoe && source flashmoe/bin/activate && uv pip install nvshmem4py-cu12 # or nvshmem4py-cu13
 uv pip install flashmoe
 ```
 ## Using Python API
@@ -55,19 +88,19 @@ if __name__ == "__main__":
     
     if args.torch_init:
         import torch.distributed as dist, os
-        world_size = torch.cuda.device_count()
         assert os.environ.get("LOCAL_RANK") is not None, "need to launch with torchrun if set with torch_init=True"
+        world_size = os.environ.get("WORLD")
         local_rank = int(os.environ['LOCAL_RANK'])
         torch.cuda.set_device(local_rank)
         device = torch.device("cuda", local_rank)
         dist.init_process_group(
             backend="cpu:gloo,cuda:nccl",
-            rank=local_rank,
+            rank=os.environ.get("RANK"),
             world_size=world_size,
             device_id=device
         )
         
-    # LLama4-Scout-17B-16E shapes
+    # Llama4-Scout-17B-16E shapes
     tokens_per_rank = 1024
     token_dim = 5120
     ffn_size = 8192
@@ -111,7 +144,7 @@ torchrun --nproc_per_node=<number of GPUs> quick.py --torch-init
 ```
 With MPI:
 ```shell
-mpiexec -n <number of GPUs> quick.py
+mpiexec -n <number of GPUs> python3 quick.py
 ```
 
 ## Use C++ API (header-only)
@@ -134,26 +167,6 @@ and include the header file like below. See `csrc/tests/flashmoe.cu` for more us
 ```
 ---
 
-## 🧠 Overview
-
-**FlashMoE** is a high-throughput, portable, correct GPU kernel that fuses the following **Distributed Mixture-of-Experts (DMoE)** operations:
-- MoE Dispatch
-- Expert computation (Gated MLP or conventional MLP)
-- MoE Combine
-
-into a *single, tile-pipelined, persistent kernel*. 
-
-It is written from scratch entirely in **pure CUDA C++**, leaning heavily on 
-[cubLASDx](https://docs.nvidia.com/cuda/cublasdx/) and [NVSHMEM](https://developer.nvidia.com/nvshmem), 
-for compute and communication, respectively.
-
-### 🏎️ Portability
-
-we support 
-- $\geq$ SM70 GPUs. Boosting compute performance for Hopper and Blackwell is on the roadmap.
-- NVLink and RDMA (EFA, IBGDA, libfabric as NVSHMEM [supports](https://docs.nvidia.com/nvshmem/release-notes-install-guide/install-guide/abstract.html#hardware-requirements)).
-- FP16, BF16, FP32 (TF32), FP64.
-
 ### ✅ Roadmap
 - [ ] Improve MMA for Hopper (WGMMA) and Blackwell (UTCMMA).
 - [ ] FP8 support
@@ -169,17 +182,13 @@ we support
 - We measure a single layer's execution only. 
 - For every model we evaluated, 
 we use model shapes and data types as defined in its corresponding `config.json` on HuggingFace. 
-- We do not execute any shared experts.
+- We **do not** execute any shared experts.
 > 👉 On frontier MoE models, FlashMoE gives up to 5x lower runtime and 69% increase in tensor core utilization compared to SOTA baselines.
-<div style="text-align: center;">
-  <img src="plots/FlashMoE_tensor_core_idle_time.png" alt="A figure comparing the tensor core idle time of FlashMoE, Triton-Distributed and Megatron-LM" width="500"/>
-  <p><em>Figure 1: Tensor Core Utilization. y-axis denotes the total portion of the MoE layer's execution that the Tensor core was inactive.</em></p>
-</div>
 
 ## Gated MLP
 <div style="text-align: center;">
   <img src="plots/FlashMoE_A100_single_node.png" width="700" alt="">
-<p><em>Figure 2: Up to 5.1x faster MoE layer runtime on Qwen-30B with singl-node EP</em></p>
+<p><em>Figure 2: Up to 5.1x faster MoE layer runtime on Qwen-30B with single-node EP</em></p>
 </div>
 
 ---
@@ -195,7 +204,7 @@ we use model shapes and data types as defined in its corresponding `config.json`
 ## Multi-node (libfabric on Slingshot 11)
 <div style="text-align: center;">
   <img src="plots/FlashMoE_A100_multi_node.png" width="600" alt="">
-<p><em>Figure 4: Up to 3x speedup on LLama4-Scout for multi-node EP!</em></p>
+<p><em>Figure 4: Up to 3x speedup on Llama4-Scout for multi-node EP!</em></p>
 </div>
 
 --- 
