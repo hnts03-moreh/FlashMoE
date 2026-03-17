@@ -197,6 +197,8 @@ mpiexec -n <number of GPUs> python3 quick.py
 ## Use C++ API (header-only)
 Add the following to your `CMakeLists.txt`
 ```CMake
+set(CMAKE_CUDA_ARCHITECTURES "native") # or your own architecture
+#...
 CPMAddPackage(
   NAME flashmoe
   GITHUB_REPOSITORY osayamenja/flashmoe

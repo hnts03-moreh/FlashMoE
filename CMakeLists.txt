@@ -78,7 +78,7 @@ function(flashmoe_parse_arch arch source out_normalized)
   set(_suffix "${CMAKE_MATCH_2}")
 
   if(_num LESS 70)
-    if(source STREQUAL "CMAKE_CUDA_ARCHITECTURES_NATIVE")
+    if(source MATCHES "NATIVE")
       message(FATAL_ERROR
         "flashmoe detected native CUDA architecture '${arch}', which is below the "
         "minimum supported architecture 70 (Volta). Please set "
@@ -124,9 +124,25 @@ function(flashmoe_normalize_arch_list raw_arches source out_arches)
 endfunction()
 
 function(flashmoe_resolve_arches out_arches out_cutlass_arches)
+  set(_raw_arches "")
+  set(_source "")
+
   if(DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "")
-    set(_raw_arches "${CMAKE_CUDA_ARCHITECTURES}")
-    set(_source "CMAKE_CUDA_ARCHITECTURES")
+    if(CMAKE_CUDA_ARCHITECTURES STREQUAL "native")
+      if(DEFINED CMAKE_CUDA_ARCHITECTURES_NATIVE AND NOT CMAKE_CUDA_ARCHITECTURES_NATIVE STREQUAL "")
+        set(_raw_arches "${CMAKE_CUDA_ARCHITECTURES_NATIVE}")
+        set(_source "CMAKE_CUDA_ARCHITECTURES_NATIVE (via CMAKE_CUDA_ARCHITECTURES=native)")
+      else()
+        message(FATAL_ERROR
+          "flashmoe: CMAKE_CUDA_ARCHITECTURES is set to 'native', but "
+          "CMAKE_CUDA_ARCHITECTURES_NATIVE is empty or unavailable. "
+          "Please set CMAKE_CUDA_ARCHITECTURES explicitly, for example 80 or 90a."
+        )
+      endif()
+    else()
+      set(_raw_arches "${CMAKE_CUDA_ARCHITECTURES}")
+      set(_source "CMAKE_CUDA_ARCHITECTURES")
+    endif()
   elseif(DEFINED CMAKE_CUDA_ARCHITECTURES_NATIVE AND NOT CMAKE_CUDA_ARCHITECTURES_NATIVE STREQUAL "")
     set(_raw_arches "${CMAKE_CUDA_ARCHITECTURES_NATIVE}")
     set(_source "CMAKE_CUDA_ARCHITECTURES_NATIVE")
@@ -205,18 +221,27 @@ function(FlashMoESetRDC tgt)
 endfunction()
 function(FlashMoEAddOptions tgt)
   if(NOT TARGET ${tgt})
-    message(FATAL_ERROR "target '${tgt}' does not exist")
+    message(FATAL_ERROR "flashmoe_add_options: target '${tgt}' does not exist")
   endif()
 
   get_target_property(_tgt_archs ${tgt} CUDA_ARCHITECTURES)
   if(NOT _tgt_archs OR _tgt_archs STREQUAL "NOTFOUND")
     set(_tgt_archs "${FLASHMOE_EFFECTIVE_CUDA_ARCHS}")
     set(_arch_source "target '${tgt}' inherited FlashMoE resolved architectures")
+  elseif(_tgt_archs STREQUAL "native")
+    if(DEFINED CMAKE_CUDA_ARCHITECTURES_NATIVE AND NOT CMAKE_CUDA_ARCHITECTURES_NATIVE STREQUAL "")
+      set(_tgt_archs "${CMAKE_CUDA_ARCHITECTURES_NATIVE}")
+      set(_arch_source "CMAKE_CUDA_ARCHITECTURES_NATIVE (via target '${tgt}' CUDA_ARCHITECTURES=native)")
+    else()
+      message(FATAL_ERROR
+        "flashmoe_add_options: target '${tgt}' uses CUDA_ARCHITECTURES=native, "
+        "but CMAKE_CUDA_ARCHITECTURES_NATIVE is empty or unavailable."
+      )
+    endif()
   else()
     set(_arch_source "target '${tgt}' CUDA_ARCHITECTURES")
   endif()
 
-  # Validation is the main goal here; normalized output is not currently reused.
   flashmoe_normalize_arch_list("${_tgt_archs}" "${_arch_source}" _normalized_tgt_archs)
 
   target_compile_options(${tgt} INTERFACE
