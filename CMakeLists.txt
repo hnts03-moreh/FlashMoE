@@ -47,8 +47,8 @@ if(TARGET nvshmem::nvshmem_host AND TARGET nvshmem::nvshmem_device)
     IMPORTED_LOCATION_RELEASE "$ENV{NVSHMEM_LIB_HOME}/libnvshmem_host.so"
   )
   target_link_libraries(flashmoe INTERFACE
-    nvshmem::nvshmem_host
     nvshmem::nvshmem_device
+    nvshmem::nvshmem_host
   )
 else()
   message(FATAL_ERROR "NVSHMEM found but no supported CMake targets detected")

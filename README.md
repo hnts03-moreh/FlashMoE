@@ -197,7 +197,12 @@ mpiexec -n <number of GPUs> python3 quick.py
 ## Use C++ API (header-only)
 Add the following to your `CMakeLists.txt`
 ```CMake
+set(CPM_SOURCE_CACHE
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cache"
+        CACHE PATH "Shared CPM source cache"
+)
 set(CMAKE_CUDA_ARCHITECTURES "native") # or your own architecture
+
 #...
 CPMAddPackage(
   NAME flashmoe
