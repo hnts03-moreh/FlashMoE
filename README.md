@@ -179,39 +179,41 @@ and include the header file like below. See `csrc/tests/flashmoe.cu` for more us
 we use model shapes and data types as defined in its corresponding `config.json` on HuggingFace. 
 - We **do not** execute any shared experts.
 > 👉 On frontier MoE models, FlashMoE gives up to 5x lower runtime and 69% increase in tensor core utilization compared to SOTA baselines.
+
+## Tensor Core Utilization
 <div style="text-align: center;">
-  <img src="plots/FlashMoE_tensor_core_idle_time.png" width="700" alt="">
+  <img src="plots/FlashMoE_tensor_core_idle_time.png" width="1763" alt="">
 <p><em>Figure 2: Up to 5.1x faster MoE layer runtime on Qwen-30B with single-node EP</em></p>
 </div>
 
 ## Gated MLP
 
-<div style="text-align: center;">
-  <img src="plots/FlashMoE_A100_single_node.png" width="700" alt="">
+<div align="center">
+  <img src="plots/FlashMoE_A100_single_node-2.png" width="4101" alt="">
 <p><em>Figure 2: Up to 5.1x faster MoE layer runtime on Qwen-30B with single-node EP</em></p>
 </div>
 
 ---
 
 ## Conventional MLP
-<div style="text-align: center;">
-  <img src="plots/FlashMoE_A100_vs_COMET.png" width="600" alt="">
+<div align="center">
+  <img src="plots/FlashMoE_A100_vs_COMET.png" width="2946" alt="">
 <p><em>Figure 3: Up to 2.6x faster runtime DeepSeek-V2-Lite</em></p>
 </div>
 
 ---
 
 ## Multi-node (libfabric on Slingshot 11)
-<div style="text-align: center;">
-  <img src="plots/FlashMoE_A100_multi_node.png" width="600" alt="">
+<div align="center">
+  <img src="plots/FlashMoE_A100_multi_node.png" width="5592" alt="">
 <p><em>Figure 4: Up to 3x speedup on Llama4-Scout for multi-node EP!</em></p>
 </div>
 
 --- 
 
 ## H100s
-<div style="text-align: center;">
-  <img src="plots/FlashMoE_H100_single_node.png" width="1500" alt="">
+<div align="center">
+  <img src="plots/FlashMoE_H100_single_node.png" width="2940" alt="">
 <p><em>Figure 5: Up to 2.5x speedup on H100s.</em></p>
 </div>
 
