@@ -15,3 +15,5 @@ csrc/include/flashmoe/*.txt
 csrc/include/flashmoe/*.log
 csrc/*.txt
 csrc/*.log
+
+build/

@@ -4,35 +4,68 @@ A Completely fused distributed MoE kernel providing high-performance single- and
 and compatible with CUDA graphs. See paper [here](https://arxiv.org/abs/2506.04667).
 ## Problem: MoE Bottlenecks in Inference
 <div align="center">
-  <img src="plots/FlashMoE_motivation.png" width="2426" alt="Opportunity">
-    <p><em>Figure 1: Opportunity. MoE constitutes 67%-95% of inference runtime</em></p>
+  <img src="assets/FlashMoE_motivation.png" width="2426" alt="Opportunity">
+    <p><em>Figure 1: Opportunity. MoE constitutes 67%-95% of inference runtime.</em></p>
 </div>
+<div align="center">
+  <img src="assets/FlashMoE_tensor_core_idle_time.png" width="1763" alt="">
+<p><em>Figure 2: Tensor core Utilization.</em></p>
+</div>
+
+Distributed MoE (DMoE) is a highly dynamic workload that is both compute and communication-intensive, so much so that 
+it takes up to 95% (Figure 1) of the runtime of distributed inference. This data highlights a huge opportunity: 
+optimizing DMoE execution directly translates to significant E2E inference gains! 
+However, we observe that existing DMoE implementations leave significant performance headroom, specifically they 
+exhibit very low tensor core utilization.
+
+
+We attribute this inefficiency to three causes: (1) exposed communication on the critical path, 
+(2) straggler delays due to load imbalance and 
+(3) system overheads arising from addressing the dynamism of token routing; for instance, such overheads present during the 
+necessary preprocessing of inputs or metadata management for downstream compute operators such as GroupedGEMM.
+
+As a result, these systems end up spending only a meager 26% (Figure 2) of their total runtime using the tensor cores.
 
 ---
 
-This text will wrap around the image on the left side. Useful for clean layouts in documentation.
+## Our Solution: Complete Kernel Fusion
+<img src="assets/FlashMoE_Arch_title.png" align="right" width="800" style="margin-left: 15px;" alt="Architecture diagram">
+To address these issues, we resort to _complete_ kernel fusion unlocking:
+1. fine-grained overlap of
+communication with computation at a tile granularity
+2. overlap of the aforementioned processing overheads using SM specialization, 
+3. exploiting _task locality_ at scale, where GPU SMs can actualize out-of-order execution of 
+computation or communication tasks whose dependencies are met with minimal delay.
 
-## Our Solution
+In contrast, existing implementations which are spread out across tens to hundreds of serialized kernels exhibit poor 
+task locality as tasks are strictly executed in the declared (stream) order, enforcing unnecessarily strict 
+interdependencies. A case in point is the idle time that GPUs must pay 
+at synchronizing collectives, AllGather, ReduceScatter, AlltoAll, as they await stragglers.
+Here, GPUs are unable to execute compute tasks that are functionally independent of this synchronizing communication.
 
-Distributed MoE is notorious for 
-
-**FlashMoE** is a high-throughput, fast and portable GPU kernel that fuses the following **Distributed Mixture-of-Experts (DMoE)** operations:
+To that end, we develop **FlashMoE** (Figure 3), the first completely fused Distributed MoE implementation. 
+FlashMoe is a high-throughput, fast and portable system that fuses:
 - MoE Dispatch
 - Expert computation (Gated MLP or conventional MLP)
 - MoE Combine
 
-into a *single, tile-pipelined, persistent kernel*.
+into a *single, tile-pipelined, persistent kernel*. We develop an Operating System (OS) within the kernel which executes concurrently of computation thus hiding latency of 
+processing overhead. 
 
-It is written from scratch entirely in **pure CUDA C++**, leaning heavily on 
+We develop the system from scratch entirely in **pure CUDA C++**, leaning heavily on 
 [cuBLASDx](https://docs.nvidia.com/cuda/cublasdx/) and [NVSHMEM](https://developer.nvidia.com/nvshmem), 
-for compute and communication, respectively.
+for high-performance, device-side compute and asynchronous, device-initiated communication, respectively. 
+We also rely heavily on critical infrastructure from [CCCL](https://github.com/nvidia/cccl) and 
+[CUTLASS](https://github.com/NVIDIA/cutlass).
 
 ### 🏎️ Portability
 
-we support 
-- $\geq$ SM70 GPUs. Boosting compute performance for Hopper and Blackwell is on the roadmap.
+We support 
+- SM70 and above GPUs. Boosting compute performance for Hopper and Blackwell is on the roadmap.
 - NVLink and multi-node RDMA (EFA, IBGDA, libfabric as NVSHMEM [supports](https://docs.nvidia.com/nvshmem/release-notes-install-guide/install-guide/abstract.html#hardware-requirements)).
-- FP16, BF16, FP32 (TF32), FP64.
+- FP16, BF16, FP32 (TF32) and FP64. FP8 and even lower precision types are on the roadmap (we welcome contributions!)
+<div style="clear: both;"></div>
+
 ---
 
 ## Requirements
@@ -42,15 +75,15 @@ we support
 - CMake (>= 3.28)
 
 ### Hardware Requirements
-- GPU Architecture $\geq$ SM 70. 
+- GPU architecture of at least SM 70. 
 - A P2P GPU interconnect (NVLink, some PCIe and GPUDirect RDMA). NVSHMEM will fail if this criterion is not met.
 
 ## Installation
-### Install cuBLASDx
+### cuBLASDx
 - Download from [here](https://developer.nvidia.com/cublasdx-downloads) and save in `<your_directory>`, e.g `~/.local`.
 - export `MATHDX_ROOT=<your_directory>/nvidia-<...>/mathdx/yy.mm/`
 
-### Install NVSHMEM
+### NVSHMEM
 - Install as directed [here](https://developer.nvidia.com/nvshmem-downloads).
 - export `NVSHMEM_LIB_HOME=/usr/lib/x86_64-linux-gnu/nvshmem/<12 or 13>`. Do confirm this directory exists!
 
@@ -177,45 +210,37 @@ and include the header file like below. See `csrc/tests/flashmoe.cu` for more us
 - For every model we evaluated, 
 we use model shapes and data types as defined in its corresponding `config.json` on HuggingFace. 
 - We **do not** execute any shared experts.
-> 👉 On frontier MoE models, FlashMoE gives up to 5x lower runtime and 69% increase in tensor core utilization compared to SOTA baselines.
-
-## Tensor Core Utilization
-<div align="center">
-  <img src="plots/FlashMoE_tensor_core_idle_time.png" width="1763" alt="">
-<p><em>Figure 2: Up to 5.1x faster MoE layer runtime on Qwen-30B with single-node EP</em></p>
-</div>
-
----
+> 👉 On frontier MoE models, FlashMoE gives up to 5x speedup and 69% increase in tensor core utilization compared to SOTA baselines.
 
 ## Gated MLP
 
 <div align="center">
-  <img src="plots/FlashMoE_A100_single_node-2.png" width="4101" alt="">
-<p><em>Figure 3: Up to 5.1x faster MoE layer runtime on Qwen-30B with single-node EP</em></p>
+  <img src="assets/FlashMoE_A100_single_node-2.png" width="4101" alt="">
+<p><em>Figure 4: Up to 5.1x faster MoE layer runtime on Qwen-30B with single-node EP</em></p>
 </div>
 
 ---
 
 ## Conventional MLP
 <div align="center">
-  <img src="plots/FlashMoE_A100_vs_COMET.png" width="2946" alt="">
-<p><em>Figure 4: Up to 2.6x faster runtime DeepSeek-V2-Lite</em></p>
+  <img src="assets/FlashMoE_A100_vs_COMET.png" width="2946" alt="">
+<p><em>Figure 5: Up to 2.6x faster runtime DeepSeek-V2-Lite</em></p>
 </div>
 
 ---
 
 ## Multi-node (libfabric on Slingshot 11)
 <div align="center">
-  <img src="plots/FlashMoE_A100_multi_node.png" width="5592" alt="">
-<p><em>Figure 5: Up to 3x speedup on Llama4-Scout for multi-node EP!</em></p>
+  <img src="assets/FlashMoE_A100_multi_node.png" width="5592" alt="">
+<p><em>Figure 6: Up to 3x speedup on Llama4-Scout for multi-node EP!</em></p>
 </div>
 
 --- 
 
 ## H100s
 <div align="center">
-  <img src="plots/FlashMoE_H100_single_node.png" width="2940" alt="">
-<p><em>Figure 6: Up to 2.5x speedup on H100s.</em></p>
+  <img src="assets/FlashMoE_H100_single_node.png" width="2940" alt="">
+<p><em>Figure 7: Up to 2.5x speedup on H100s.</em></p>
 </div>
 
 ---
@@ -238,6 +263,15 @@ The codebase integrates well with CLion: open the project at `csrc`.
 
 ## Contributions
 We welcome them! Submit a PR!
+
+## Acknowledgements
+Super grateful to the amazing folks behind
+- cuBLASDx 
+- CUTLASS
+- NVSHMEM
+- CCCL
+
+This work would not have been possible without the critical building blocks they provide.
 
 # 📖 Citation
 If you can, please cite as below:
