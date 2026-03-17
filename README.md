@@ -38,7 +38,7 @@ We identify three key sources of inefficiency:
 
 1. **Exposed communication on the critical path**  
 2. **Straggler-induced delays** from load imbalance  
-3. **System overheads** from dynamic token routing (e.g., metadata management, inputs preprocessing for computer operators like GroupedGEMM)
+3. **System overheads** from dynamic token routing (e.g., metadata management, inputs preprocessing for compute operators like GroupedGEMM)
 
 As a result, GPUs spend the majority of time stalled, with only **26% of runtime utilizing tensor cores**.
 
@@ -56,7 +56,7 @@ We address these inefficiencies through **complete kernel fusion**, enabling:
 3. **Exploitation of task locality at scale**, allowing SMs to execute ready tasks out-of-order, minimizing idle and boosting resource utilization.
 
 In contrast, existing implementations rely on tens to hundreds of serialized kernels, enforcing strict execution order
-and limiting task locality.
+and limiting _task locality_.
 
 This results in unnecessary stalls—for example, during collective synchronization (AllGather, ReduceScatter, AllToAll),
 where GPUs idle waiting for stragglers instead of executing independent compute tasks.
@@ -111,8 +111,7 @@ We support
 
 ## 🚀 Python QuickStart
 ```bash
-git clone https://github.com/osayamenja/FlashMoE.git
-pip install ".[cu12]" # or cu13
+pip install "git+https://github.com/osayamenja/FlashMoE.git#egg=flashmoe[cu12]" # or cu13
 ```
 ## Using Python API
 ```python
