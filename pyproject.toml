@@ -1,19 +1,20 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "flashmoe"
 version = "0.1.0"
 readme = "README.md"
-license = {text = "BSD 3-Clause License"}
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 description = "Completely Fused Distributed MoE"
 requires-python = ">=3.10"
 authors = [
   { name = "Osayamen Jonathan Aimuyo", email = "osayamen@stanford.edu" },
 ]
 dependencies = [
-    "cuda-core"
+    "cuda-core==0.4.0" # this is due to nvshmem, will relax soon.
 ]
 
 [project.optional-dependencies]

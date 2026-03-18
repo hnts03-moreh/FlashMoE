@@ -17,11 +17,11 @@ and work seamlessly with CUDA graphs. See paper [here](https://arxiv.org/abs/250
 <table>
   <tr>
     <td align="center">
-      <img src="assets/FlashMoE_motivation.png" alt="Opportunity" width="800"/><br>
+      <img src="https://raw.githubusercontent.com/osayamenja/FlashMoE/main/assets/FlashMoE_motivation.png" alt="Opportunity" width="800"/><br>
       <em>Figure 1: Opportunity. MoE takes 67%-95% of inference runtime.</em>
     </td>
     <td align="center">
-      <img src="assets/FlashMoE_tensor_core_idle_time.png" alt="Tensor core utilization" width="600"/><br>
+      <img src="https://raw.githubusercontent.com/osayamenja/FlashMoE/main/assets/FlashMoE_tensor_core_idle_time.png" alt="Tensor core utilization" width="600"/><br>
       <em>Figure 2: Tensor core Utilization. y-axis is percentage of MoE runtime that tensor cores are inactive.</em>
     </td>
   </tr>
@@ -45,7 +45,7 @@ As a result, GPUs spend the majority of time stalled, with only **26% of runtime
 ## Our Solution: Complete Kernel Fusion
 
 <div align="center">
-  <img src="assets/FlashMoE_Arch_title.png" width="700" alt="">
+  <img src="https://raw.githubusercontent.com/osayamenja/FlashMoE/main/assets/FlashMoE_Arch_title.png" width="700" alt="">
 <p><em>Figure 3: FlashMoE Architecture</em></p>
 </div>
 
@@ -111,7 +111,7 @@ We support
 
 ## 🚀 Python QuickStart
 ```bash
-pip install "git+https://github.com/osayamenja/FlashMoE.git#egg=flashmoe[cu12]" # or cu13
+pip install flashmoe[cu12] # or cu13
 ```
 ## Using Python API
 ```python
@@ -191,6 +191,7 @@ torchrun --nproc_per_node=<number of GPUs> quick.py --torch-init
 ```
 With MPI:
 ```shell
+pip install mpi4py
 mpiexec -n <number of GPUs> python3 quick.py
 ```
 
@@ -207,7 +208,7 @@ set(CMAKE_CUDA_ARCHITECTURES "native") # or your own architecture
 CPMAddPackage(
   NAME flashmoe
   GITHUB_REPOSITORY osayamenja/flashmoe
-  GIT_TAG main
+  GIT_TAG v0.1.0
 )
 
 target_link_libraries(app PRIVATE flashmoe::flashmoe)
@@ -242,7 +243,7 @@ we use model shapes and data types as defined in its corresponding `config.json`
 ## Gated MLP
 
 <div align="center">
-  <img src="assets/FlashMoE_A100_single_node-2.png" width="4101" alt="">
+  <img src="https://raw.githubusercontent.com/osayamenja/FlashMoE/main/assets/FlashMoE_A100_single_node-2.png" width="4101" alt="">
 <p><em>Figure 4: Up to 5.1x faster MoE layer runtime on Qwen-30B with single-node EP</em></p>
 </div>
 
@@ -250,7 +251,7 @@ we use model shapes and data types as defined in its corresponding `config.json`
 
 ## Conventional MLP
 <div align="center">
-  <img src="assets/FlashMoE_A100_vs_COMET.png" width="2946" alt="">
+  <img src="https://raw.githubusercontent.com/osayamenja/FlashMoE/main/assets/FlashMoE_A100_vs_COMET.png" width="2946" alt="">
 <p><em>Figure 5: Up to 2.6x faster runtime DeepSeek-V2-Lite</em></p>
 </div>
 
@@ -258,7 +259,7 @@ we use model shapes and data types as defined in its corresponding `config.json`
 
 ## Multi-node (libfabric on Slingshot 11)
 <div align="center">
-  <img src="assets/FlashMoE_A100_multi_node.png" width="5592" alt="">
+  <img src="https://raw.githubusercontent.com/osayamenja/FlashMoE/main/assets/FlashMoE_A100_multi_node.png" width="5592" alt="">
 <p><em>Figure 6: Up to 3x speedup on Llama4-Scout for multi-node EP!</em></p>
 </div>
 
@@ -266,7 +267,7 @@ we use model shapes and data types as defined in its corresponding `config.json`
 
 ## H100s
 <div align="center">
-  <img src="assets/FlashMoE_H100_single_node.png" width="2940" alt="">
+  <img src="https://raw.githubusercontent.com/osayamenja/FlashMoE/main/assets/FlashMoE_H100_single_node.png" width="2940" alt="">
 <p><em>Figure 7: Up to 2.5x speedup on H100s.</em></p>
 </div>
 

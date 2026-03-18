@@ -39,12 +39,6 @@ target_compile_options(flashmoe_warnings INTERFACE
 
 find_package(CUDAToolkit REQUIRED)
 
-set(FLASHMOE_KERNELS_SOURCE "" CACHE PATH "Path to flashmoe kernels source tree (optional)")
-
-if (FLASHMOE_KERNELS_SOURCE)
-  set(FLASHMOE_SOURCE_DIR ${FLASHMOE_KERNELS_SOURCE})
-endif()
-
 if (NOT DEFINED GENERATED_SRC)
   message(FATAL_ERROR "Need -DGENERATED_SRC")
 endif()
@@ -68,7 +62,7 @@ if(ARCH GREATER_EQUAL 90)
 endif()
 
 # ---- CPM ----
-include(${FLASHMOE_SOURCE_DIR}/cmake/CPM.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/CPM.cmake)
 
 #pybind11
 set(PYBIND11_FINDPYTHON ON)
@@ -77,40 +71,21 @@ CPMAddPackage(
   GITHUB_REPOSITORY pybind/pybind11
   VERSION 3.0.1
 )
-
-#CCCL
-CPMAddPackage(
-        NAME CCCL
-        GITHUB_REPOSITORY nvidia/cccl
-        VERSION 3.1.3
-)
-
-#CUTLASS
-CPMAddPackage(
-        NAME CUTLASS
-        GITHUB_REPOSITORY nvidia/cutlass
-        GIT_TAG v4.4.1
-        DOWNLOAD_ONLY TRUE
-        OPTIONS
-        "CUTLASS_NVCC_ARCHS=${ARCH_TAG}"
-)
-
-#NVSHMEM
-find_package(NVSHMEM REQUIRED)
-
 if(NOT COMMAND pybind11_add_module)
     message(FATAL_ERROR "pybind11 not found")
 endif()
 pybind11_add_module(${TARGET_MODULE_NAME} MODULE ${GENERATED_SRC})
 
-target_include_directories(${TARGET_MODULE_NAME} PRIVATE
-  ${FLASHMOE_KERNELS_SOURCE}/include
+CPMAddPackage(
+        NAME flashmoe
+        GITHUB_REPOSITORY osayamenja/flashmoe
+        GIT_TAG v0.1.0
 )
 
-set_target_properties(${TARGET_MODULE_NAME} PROPERTIES
-  CUDA_SEPARABLE_COMPILATION ON
-  CUDA_RESOLVE_DEVICE_SYMBOLS ON
-)
+target_link_libraries(${TARGET_MODULE_NAME} PRIVATE flashmoe::flashmoe)
+
+FlashMoESetRDC(${TARGET_MODULE_NAME})
+FlashMoEAddOptions(${TARGET_MODULE_NAME})
 
 target_compile_options(${TARGET_MODULE_NAME} PRIVATE
             $<$<COMPILE_LANGUAGE:CXX>:-O3>
@@ -124,19 +99,3 @@ target_link_libraries(${TARGET_MODULE_NAME} PRIVATE CUDA::cudart flashmoe_warnin
 target_compile_definitions(${TARGET_MODULE_NAME} PRIVATE
             FLASHMOE_ARCH=${GPU_ARCH}
 )
-if (NOT DEFINED ENV{NVSHMEM_LIB_HOME})
-    message(FATAL_ERROR "NVSHMEM_LIB_HOME not defined")
-endif ()
-set_target_properties(nvshmem::nvshmem_host PROPERTIES
-        IMPORTED_LOCATION_RELEASE "$ENV{NVSHMEM_LIB_HOME}/libnvshmem_host.so"
-)
-target_link_libraries(${TARGET_MODULE_NAME} PRIVATE nvshmem::nvshmem_host nvshmem::nvshmem_device)
-# cuBLASDx
-find_package(mathdx REQUIRED COMPONENTS cublasdx CONFIG)
-target_link_libraries(${TARGET_MODULE_NAME} PRIVATE mathdx::cublasdx)
-if(TARGET CCCL::CCCL)
-        target_link_libraries(${TARGET_MODULE_NAME} PRIVATE CCCL::CCCL)
-endif()
-if(DEFINED CUTLASS_SOURCE_DIR AND EXISTS "${CUTLASS_SOURCE_DIR}/include")
-    target_include_directories(${TARGET_MODULE_NAME} SYSTEM PRIVATE "${CUTLASS_SOURCE_DIR}/include")
-endif()

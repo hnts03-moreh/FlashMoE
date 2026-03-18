@@ -227,7 +227,6 @@ def _get_compiled(arg: InitArgs, src: str, mod_prefix: str, mod_name: str):
     generated.write_text(src)
 
     root = Path(__file__).resolve().parent.parent
-    csrc_dir = root / "csrc"
     cmake_source_dir = root / "flashmoe"  # because root CMakeLists.txt lives here
 
     def _try_acquire_lock() -> bool:
@@ -273,7 +272,6 @@ def _get_compiled(arg: InitArgs, src: str, mod_prefix: str, mod_name: str):
         subprocess.run([
             "cmake", "-S", str(cmake_source_dir), "-B", str(bdir), "-G", "Ninja",
             f"-DGENERATED_SRC={generated}",
-            f"-DFLASHMOE_KERNELS_SOURCE={csrc_dir}",
             f"-DTARGET_MODULE_NAME={mod_name}",
             f"-DCMAKE_CUDA_ARCHITECTURES={arg.gpu_arch // 10}",
             f"-DCPM_SOURCE_CACHE={Path.home() / '.cache' / 'cpm'}",
