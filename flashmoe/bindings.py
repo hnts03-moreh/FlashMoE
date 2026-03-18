@@ -123,9 +123,6 @@ static void moe_forward(const std::uintptr_t& raw_ctx,
   const std::uintptr_t& stream_ptr) {
   const auto* ctx = reinterpret_cast<flashmoe::Context*>(raw_ctx);
   auto stream = reinterpret_cast<cudaStream_t>(stream_ptr);
-  if (!ctx) {
-    throw std::runtime_error("Invalid context");
-  }
   constexpr auto isGated = mt == flashmoe::MLPMatmulType::gated;
   const flashmoe::moe::KernelArgs kArgs{
     reinterpret_cast<const cuda::std::byte*>(tokens),
@@ -275,9 +272,6 @@ static void gate_forward(const std::uintptr_t& raw_ctx,
   const std::uintptr_t& stream_ptr) {
   const auto* ctx = reinterpret_cast<flashmoe::GateContext*>(raw_ctx);
   auto stream = reinterpret_cast<cudaStream_t>(stream_ptr);
-  if (!ctx) {
-    throw std::runtime_error("Invalid context");
-  }
   const flashmoe::gate::GateKernelArgs kArgs{
     .tokens = reinterpret_cast<const cuda::std::byte*>(tokens_),
     .weights = reinterpret_cast<const cuda::std::byte*>(weights_),

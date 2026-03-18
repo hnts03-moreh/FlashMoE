@@ -101,13 +101,19 @@ We support
 ## Installation
 ### cuBLASDx
 - Download from [here](https://developer.nvidia.com/cublasdx-downloads) and save in `<your_directory>`, e.g `~/.local`.
-- export `MATHDX_ROOT=<your_directory>/nvidia-<...>/mathdx/yy.mm/`
 
 ### NVSHMEM
 - Install as directed [here](https://developer.nvidia.com/nvshmem-downloads).
-- export `NVSHMEM_LIB_HOME=/usr/lib/x86_64-linux-gnu/nvshmem/<12 or 13>`. Do confirm this directory exists!
 
-> 👉 Tip: add `MATHDX_ROOT=...` and `NVSHMEM_LIB_HOME=...` to `.bashrc`
+### Env Variables
+```shell
+export NVSHMEM_LIB_HOME=/usr/lib/x86_64-linux-gnu/nvshmem/<12 or 13>. #Do confirm this directory exists!
+export MATHDX_ROOT=<your_directory>/nvidia-<...>/mathdx/yy.mm/
+export CMAKE_PREFIX_PATH=$NVSHMEM_LIB_HOME:$MATHDX_ROOT:$CMAKE_PREFIX_PATH
+export LD_LIBRARY_PATH=$NVSHMEM_LIB_HOME:$LD_LIBRARY_PATH
+```
+
+> 👉 Tip: add the above exports to your `.bashrc`
 
 ## 🚀 Python QuickStart
 ```bash

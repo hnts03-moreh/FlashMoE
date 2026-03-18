@@ -1,10 +1,6 @@
-/*
- * Copyright (c) 2026, Osayamen Jonathan Aimuyo
- * All rights reserved.
- *
- * This file is part of the Flashmoe Project and is licensed under the BSD 3-Clause License.
- * See the LICENSE file in the root directory for full terms.
- */
+/******************************************************************************
+ * Copyright (c) 2026, Osayamen Jonathan Aimuyo.
+ ******************************************************************************/
 
 //
 // Created by Osayamen on 11/17/24.
