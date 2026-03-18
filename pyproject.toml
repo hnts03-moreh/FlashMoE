@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "flashmoe"
+name = "flashmoe-py"
 version = "0.1.0"
 readme = "README.md"
 license = "BSD-3-Clause"
@@ -29,7 +29,7 @@ Repository = "https://github.com/osayamenja/FlashMoE"
 packages = ["flashmoe"]
 
 [tool.setuptools.package-data]
-# IMPORTANT: include the headers in the package
 flashmoe = [
-  "CMakeLists.txt",
+    "CMakeLists.txt",
+    "cmake/*"
 ]

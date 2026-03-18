@@ -111,7 +111,7 @@ We support
 
 ## 🚀 Python QuickStart
 ```bash
-pip install flashmoe[cu12] # or cu13
+pip install flashmoe-py[cu12] # or cu13
 ```
 ## Using Python API
 ```python
