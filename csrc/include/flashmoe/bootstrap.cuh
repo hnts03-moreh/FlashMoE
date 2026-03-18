@@ -199,7 +199,6 @@ namespace flashmoe {
 #if defined(FLASHMOE_NVTX) && FLASHMOE_NVTX
     const flashmoeRange range{"FlashMoE::initialize"};
 #endif
-    // fused gate + moe layer
     if (args.tokenDim % args.bK0 != 0 || args.tokenDim % args.bN1 != 0) {
       throw std::runtime_error("token dimension should be multiples of tile dimensions");
     }

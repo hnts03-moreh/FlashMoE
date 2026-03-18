@@ -46,7 +46,7 @@ namespace flashmoe
                 const uint16_t& stateNumber) {
     // Assumptions are below:
     // workspace is in shared memory;
-    // ceil(EC, bM) * num_local_experts <= UINT16_MAX
+    // ceil(EC / bM) * num_local_experts <= UINT16_MAX
     // tokens and tokensId are at least 32-byte aligned.
     // we require superblocks to be equally sized
     const auto numSuperBlocks = blocks / superBlockSize;
