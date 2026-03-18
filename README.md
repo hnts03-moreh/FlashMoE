@@ -121,7 +121,6 @@ pip install flashmoe-py[cu12] # or cu13
 ```
 ## Using Python API
 ```python
-# quick.py
 import argparse
 import cuda.core.experimental as cuda
 import flashmoe
@@ -142,7 +141,7 @@ if __name__ == "__main__":
     if args.torch_init:
         import torch.distributed as dist, os
         assert os.environ.get("LOCAL_RANK") is not None, "need to launch with torchrun if set with torch_init=True"
-        world_size = os.environ.get("WORLD_SIZE")
+        world_size = int(os.environ.get("WORLD_SIZE"))
         local_rank = int(os.environ['LOCAL_RANK'])
         torch.cuda.set_device(local_rank)
         device = torch.device("cuda", local_rank)
@@ -190,15 +189,44 @@ if __name__ == "__main__":
         import torch.distributed as dist
         dist.destroy_process_group()
 ```
-### Running the Python Program
-With torchrun:
+## Running a Python Program
+We suggest running these to verify that you meet all installation requirements.
+
+## Single-Node
+### Torchrun
+
 ```shell
-torchrun --nproc_per_node=<number of GPUs> quick.py --torch-init
+torchrun --nproc_per_node=<number of GPUs> quickstart.py --torch-init
 ```
-With MPI:
+
+### MPI
 ```shell
 pip install mpi4py
-mpiexec -n <number of GPUs> python3 quick.py
+mpirun -n <number of GPUs> python3 quickstart.py
+```
+
+### Multi-node
+Getting this to work would be dependent on the launcher in your cluster. 
+Below, we suggest some launch recipes. Use what works for you.
+```shell
+# SLURM with libfabric (tested)
+export NVSHMEM_REMOTE_TRANSPORT=libfabric
+export NVSHMEM_LIBFABRIC_PROVIDER=... # efa,cxi,or verbs
+export NVSHMEM_DISABLE_CUDA_VMM=1
+export NVSHMEM_BOOTSTRAP=MPI
+srun -N <number of nodes> -n <total number of gpus> \
+    --ntasks-per-node=<gpus per node> --gpus-per-task=1 --gpu-bind=closest python3 quickstart.py
+```
+```shell 
+# torchrun with Connect-x NICs (not tested)
+export NVSHMEM_IB_ENABLE_IBGDA=true
+torchrun \
+    --nproc_per_node=<number of GPUs> \
+    --nnodes<...> \
+    --rdzv_endpoint=<master address, like hostname of rank 0> \
+    --rdzv_backend=c10d \
+    --rdzv-id=<some id, like 123456789> \
+    --node_rank=<...> python3 quickstart.py
 ```
 
 ## Use C++ API (header-only)
