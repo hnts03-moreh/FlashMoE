@@ -25,7 +25,9 @@ namespace flashmoe::heuristics {
   }
   template<int M, int Arch>
   consteval int getMoETileM() {
-    if constexpr (Arch >= 900 && M >= 4096) {
+    // not a requirement for M to be a multiple of 2; however, I have observed absurd codegen for "unfriendly" shapes.
+    // "Absurd" here refers to register spilling.
+    if constexpr (Arch >= 900 && M >= 4096 && M % 2 == 0) {
       return cute::max(cute::min(M, 256), 16);
     }
     return cute::max(cute::min(M, 128), 16);

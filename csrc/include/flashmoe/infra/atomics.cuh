@@ -10,8 +10,8 @@
 // Created by osayamen on 8/17/24.
 //
 
-#ifndef CSRC_ATOMICS_CUH
-#define CSRC_ATOMICS_CUH
+#ifndef FLASHMOE_ATOMICS_CUH
+#define FLASHMOE_ATOMICS_CUH
 #include <cuda/atomic>
 #include <cuda/barrier>
 
@@ -59,15 +59,23 @@ namespace flashmoe {
   static_assert(initialized == 1 && stale != initializing && initialized != initializing);
 
   // Enables in-kernel initialization of global accumulators
+  // Only correct if invoked _once by all participants per epoch_ (kernel launch)
   __device__ __forceinline__
   auto guardedAtomicAdd(int *__restrict__ const&guard, int *__restrict__ const&vals, const int &val,
                         const int &participants) {
+    // assert(participants >= 1)
+    if (participants == 1) {
+      // fast path, no need for atomics
+      *vals = val;
+      return 0;
+    }
+    // participants > 1
     const cuda::atomic_ref<int, cuda::thread_scope_device> g{*guard};
     int expected = stale;
     if (g.compare_exchange_strong(expected, initializing, cuda::memory_order_acquire)) {
       // initialize with my value
       *vals = val;
-      g.store(participants == 1 ? stale : initialized, cuda::memory_order_release);
+      g.store(initialized, cuda::memory_order_release);
       return 0;
     }
     while (expected == initializing) {
@@ -79,31 +87,5 @@ namespace flashmoe {
     }
     return atomicAdd(vals, val);
   }
-
-  enum class SentinelScope {
-    invalid
-  };
-
-  template<class T>
-  struct ScopeOf {
-    using Scope = cuda::std::integral_constant<SentinelScope, SentinelScope::invalid>;
-  };
-
-  template<cuda::thread_scope _Sco, class... Args>
-  struct ScopeOf<cuda::barrier<_Sco, Args...> > {
-    using Scope = cuda::std::integral_constant<cuda::thread_scope, _Sco>;
-  };
-
-  template<typename CudaBarrier>
-  __device__ __forceinline__
-  void gridBarrier(CudaBarrier *const&db) {
-    __syncthreads();
-    static_assert(ScopeOf<cuda::std::remove_cvref_t<CudaBarrier> >::Scope::value == cuda::thread_scope_device,
-                  "Expects device-scope barrier");
-    if (!threadIdx.x) {
-      db->arrive_and_wait();
-    }
-    __syncthreads();
-  }
 }
-#endif //CSRC_ATOMICS_CUH
+#endif //FLASHMOE_ATOMICS_CUH
