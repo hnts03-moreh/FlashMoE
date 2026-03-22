@@ -119,75 +119,39 @@ export LD_LIBRARY_PATH=$NVSHMEM_LIB_HOME:$LD_LIBRARY_PATH
 ```bash
 pip install flashmoe-py[cu12] # or cu13
 ```
-## Using Python API
+## Python API Showcase
+See `quickstart.py` for a complete example, the below is just a showcase.
 ```python
-import argparse
-import cuda.core.experimental as cuda
 import flashmoe
-import torch
 
-device_id = flashmoe.get_local_rank()
-dev = cuda.Device(device_id)
-dev.set_current()
-stream = dev.create_stream()
-stream_ptr = int(stream.handle)
-arch = int(dev.arch) * 10
-    
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--torch-init", action="store_true")
-    args = parser.parse_args()
-    
-    if args.torch_init:
-        import torch.distributed as dist, os
-        assert os.environ.get("LOCAL_RANK") is not None, "need to launch with torchrun if set with torch_init=True"
-        world_size = int(os.environ.get("WORLD_SIZE"))
-        local_rank = int(os.environ['LOCAL_RANK'])
-        torch.cuda.set_device(local_rank)
-        device = torch.device("cuda", local_rank)
-        dist.init_process_group(
-            backend="cpu:gloo,cuda:nccl",
-            rank=int(os.environ.get("RANK")),
-            world_size=world_size,
-            device_id=device
-        )
-        
     # Llama4-Scout-17B-16E shapes
+    # model description which flashmoe.initialize uses to JIT compile the kernel
     tokens_per_rank = 1024
     token_dim = 5120
     ffn_size = 8192
     num_experts = 16
     k = 1
-    
-    # define model config
     mlp_type = flashmoe.MLPType.GATED # Gated MLP
     data_type = flashmoe.DataType.BF16
     act_type = flashmoe.ActivationType.SILU
     
-    init_args = flashmoe.InitArgs(data_type=data_type,
-        mlp_type=mlp_type, act_type=act_type,
-        tokens_per_rank=tokens_per_rank, token_dim=token_dim,
-        ffn_size=ffn_size, num_experts=num_experts,
-        top_k=k, gpu_arch=arch, stream_ptr=stream_ptr, device_id=device_id)
+    init_args = flashmoe.InitArgs(...) # see quickstart.py for more details
     
-    # initialize flashmoe and fused router
     flash_handle = flashmoe.initialize(init_args)
     router_handle = flashmoe.router.initialize(init_args)
 
-    # call forward of fused router
     router_forward_args = ... # see quickstart.py for an example
+    # single kernel for GEMM + Softmax + topk selection
     flashmoe.router.forward(router_handle, flash_handle, router_forward_args)
-    # call forward of FlashMoE
+    
     flashmoe_forward_args = ... # see quickstart.py for an example
-    flashmoe.forward(flash_handle, flashmoe_forward_args) # single kernel for Dispatch + Experts + Combine
+    # single kernel for Dispatch + Experts + Combine
+    flashmoe.forward(flash_handle, flashmoe_forward_args)
     
     # call finalize
-    flashmoe.finalize(flash_handle, stream_ptr)
-    flashmoe.router.finalize(router_handle, stream_ptr)
-    stream.close()
-    if args.torch_init:
-        import torch.distributed as dist
-        dist.destroy_process_group()
+    flashmoe.finalize(flash_handle)
+    flashmoe.router.finalize(router_handle)
 ```
 ## Running a Python Program
 We suggest running these to verify that you meet all installation requirements.
