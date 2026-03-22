@@ -136,16 +136,16 @@ if __name__ == "__main__":
     data_type = flashmoe.DataType.BF16
     act_type = flashmoe.ActivationType.SILU
     
-    init_args = flashmoe.InitArgs(...) # see quickstart.py for more details
+    init_args = flashmoe.InitArgs(...)
     
     flash_handle = flashmoe.initialize(init_args)
     router_handle = flashmoe.router.initialize(init_args)
 
-    router_forward_args = ... # see quickstart.py for an example
+    router_forward_args = ...
     # single kernel for GEMM + Softmax + topk selection
     flashmoe.router.forward(router_handle, flash_handle, router_forward_args)
     
-    flashmoe_forward_args = ... # see quickstart.py for an example
+    flashmoe_forward_args = ...
     # single kernel for Dispatch + Experts + Combine
     flashmoe.forward(flash_handle, flashmoe_forward_args)
     
