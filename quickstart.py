@@ -1,6 +1,6 @@
 import random
 
-import cuda.core.experimental as cuda
+import cuda.core as cuda
 import argparse
 import torch
 

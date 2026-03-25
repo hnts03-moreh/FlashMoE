@@ -9,7 +9,7 @@ def initialize(arg: InitArgs) -> ContextHandle:
     from .bindings import flashmoe_bindings
     from . import cb
     import nvshmem.core as nvshmem
-    import cuda.core.experimental as cuda
+    import cuda.core as cuda
     assert arg.ep_rank is None or ((arg.rank_map is not None)
         and (arg.ep_world is not None) and (arg.expert_map is not None)
         and (arg.num_local_experts is not None)
@@ -96,7 +96,7 @@ def finalize(handle: ContextHandle, stream_ptr: int) -> None:
     global SHOULD_FINALIZE_NVSHMEM
     if SHOULD_FINALIZE_NVSHMEM:
         SHOULD_FINALIZE_NVSHMEM = False
-        import cuda.core.experimental as cuda
+        import cuda.core as cuda
         import nvshmem.core as nvshmem
         dev = cuda.Device(get_local_rank())
         dev.sync()

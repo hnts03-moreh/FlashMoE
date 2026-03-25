@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flashmoe-py"
-version = "0.1.0"
+version = "0.1.1"
 readme = "README.md"
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
@@ -12,6 +12,10 @@ description = "Completely Fused Distributed MoE"
 requires-python = ">=3.10"
 authors = [
   { name = "Osayamen Jonathan Aimuyo", email = "osayamen@stanford.edu" },
+]
+
+dependencies = [
+    "cuda-core>=0.5.0"
 ]
 
 [project.optional-dependencies]

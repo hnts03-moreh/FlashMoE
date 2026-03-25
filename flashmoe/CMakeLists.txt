@@ -79,7 +79,7 @@ pybind11_add_module(${TARGET_MODULE_NAME} MODULE ${GENERATED_SRC})
 CPMAddPackage(
         NAME flashmoe
         GITHUB_REPOSITORY osayamenja/flashmoe
-        GIT_TAG main
+        GIT_TAG v0.1.1
 )
 
 target_link_libraries(${TARGET_MODULE_NAME} PRIVATE flashmoe::flashmoe)

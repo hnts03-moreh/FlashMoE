@@ -11,13 +11,13 @@ def get_local_rank() -> int:
         return int(os.environ.get("LOCAL_RANK"))
     elif has_package("mpi4py"):
         import mpi4py.MPI as MPI
-        import cuda.core.experimental as cuda
+        import cuda.core as cuda
         return MPI.COMM_WORLD.Get_rank() % cuda.system.num_devices
     else:
         raise RuntimeError("At least one of {torch, mpi4py} must be available")
 
 def initialize() -> None:
-    import cuda.core.experimental as cuda
+    import cuda.core as cuda
     import nvshmem.core as nvshmem
     global IS_INITIALIZED
     if nvshmem.init_status() == nvshmem.InitStatus.STATUS_IS_INITIALIZED:
@@ -67,6 +67,6 @@ def get_world_size() -> int:
 def sync_all(stream_ptr: int) -> None:
     assert IS_INITIALIZED
     import nvshmem.core as nvshmem
-    import cuda.core.experimental as cuda
+    import cuda.core as cuda
     nvshmem.sync_all(stream=cuda.Stream.from_handle(stream_ptr))
 
