@@ -178,7 +178,7 @@ namespace flashmoe::processor
     // registers -> shared memory
     static_assert(sizeof(Task) % sizeof(uint4) == 0 && alignof(Task) % sizeof(uint4) == 0);
     static_assert(cuda::std::is_trivially_copyable_v<Task>);
-    using TVT = cutlass::AlignedArray<uint4, sizeof(Task) / sizeof(uint4)>;
+    using TVT = cutlass::AlignedArray<uint4, sizeof(Task) / sizeof(uint4), alignof(Task)>;
     auto* __restrict__ sTQ = static_cast<TVT*>(workspace);
     for (int i = threadIdx.x; i < tasks; i += threads) {
       const auto tvv = cuda::std::bit_cast<TVT>(
@@ -374,7 +374,6 @@ namespace flashmoe::processor
                 const auto symOffset = static_cast<size_t>(bM) * mCoord * H * sizeof(Element);
                 nvshmem_putmem_signal_nbi(task.rcData + symOffset,
                                           task.cData[1] + symOffset,
-                                          // Batched remote network transfer to avoid overwhelming the NIC
                                           static_cast<size_t>(task.tileSize() * H) * sizeof(Element),
                                           task.flags,
                                           sigPayload,

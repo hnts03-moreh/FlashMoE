@@ -548,7 +548,7 @@ void kickstart(const Options& opts) {
     reinterpret_cast<const cuda::std::byte*>(localExpertDownWeights),
     reinterpret_cast<const cuda::std::byte*>(localBiasDown),
     expertCounts, reinterpret_cast<cuda::std::byte*>(moeOut),
-    opts.S, opts.H, opts.I, opts.E, opts.EC, Arch, mt, isGated ? swishAlpha : 1.f, isGated ? swishBeta : 1.f
+    opts.S, opts.H, opts.I, opts.E, opts.EC, Arch, mt, bM, isGated ? swishAlpha : 1.f, isGated ? swishBeta : 1.f
   };
 
   const flashmoe::gate::GateKernelArgs gkArgs{

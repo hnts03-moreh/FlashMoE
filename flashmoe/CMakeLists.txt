@@ -76,10 +76,12 @@ if(NOT COMMAND pybind11_add_module)
 endif()
 pybind11_add_module(${TARGET_MODULE_NAME} MODULE ${GENERATED_SRC})
 
+set(ENV{NVSHMEM_BUILD_LTOIR_LIBRARY} ON)
+set(NVSHMEM_BUILD_LTOIR_LIBRARY ON)
 CPMAddPackage(
         NAME flashmoe
         GITHUB_REPOSITORY osayamenja/flashmoe
-        GIT_TAG v0.1.1
+        GIT_TAG main
 )
 
 target_link_libraries(${TARGET_MODULE_NAME} PRIVATE flashmoe::flashmoe)

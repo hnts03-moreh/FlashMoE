@@ -32,7 +32,7 @@ namespace flashmoe {
     uint *const tileSync = nullptr; // [world, num_local_experts, ecTilesM] = tiles(S)
     uint *const statusQueue = nullptr; // [processors]
     TPS *const tokenIndices = nullptr; // [E, roundEC]
-    uint8_t* const stateNumbers = nullptr; // [processCTAs]
+    uint8_t* const stateNumbers = nullptr; // [processorCTAs]
     const cuda::fast_mod_div<uint> processors_v;
     const uint blocks = 0;
     const uint smemSize = 0;

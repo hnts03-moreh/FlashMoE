@@ -106,8 +106,8 @@ namespace flashmoe::moe
       const cuda::std::byte* const& bias_down,
       const int* const& expert_counts, cuda::std::byte* const& moe_out,
       const size_t& s, const size_t& h, const size_t& i, const size_t& e, const size_t& ec,
-      const int& arch, const MLPMatmulType& m,
-      const float& swishAlpha, const float& swishBeta, const bool check = true)
+      const int& arch, const MLPMatmulType& m, const int& bM, const float& swishAlpha, const float& swishBeta,
+      const bool check = true)
       : tokens(tokens),
         expertUpWeights(expert_up_weights),
         expertUpVWeights(expert_up_v_weights),
@@ -120,7 +120,9 @@ namespace flashmoe::moe
         H(static_cast<uint>(h)),
         I(static_cast<uint>(i)),
         E(static_cast<uint>(e)),
-        EC(static_cast<uint>(ec)), swishAlpha(swishAlpha), swishBeta(swishBeta) {
+        EC(static_cast<uint>(ec)),
+        flagColStride(cute::ceil_div(EC, bM) * E),
+        swishAlpha(swishAlpha), swishBeta(swishBeta) {
       if (check) {
         const auto supports32 = arch >= 1000;
         checkAlignment(tokens, supports32);
@@ -151,6 +153,7 @@ namespace flashmoe::moe
     const uint I; // FFN intermediate size
     const uint E; // total number of experts
     const uint EC; // expert capacity
+    const uint flagColStride; // ceil(EC / bM) * E
     const float swishAlpha = 1.f;
     const float swishBeta = 1.f;
   };
@@ -231,9 +234,8 @@ namespace flashmoe::moe
     const auto* __restrict__ biasDown = reinterpret_cast<const DataType*>(kArgs.biasDown);
     auto* __restrict__ moeOut = reinterpret_cast<DataType*>(kArgs.moeOut);
     // processor
-    const auto flagColStride = ecTilesM * kArgs.E;
     processor::start<Config::MT::value, topo, threads, Config::CM::value, TileGEMM0, TileGEMM1, GEMM0Act>
-    (flashWorkspace, kArgs.S, kArgs.H, kArgs.I, roundEC, flagColStride, tilesN0, tilesN1,
+    (flashWorkspace, kArgs.S, kArgs.H, kArgs.I, roundEC, kArgs.flagColStride, tilesN0, tilesN1,
       expertUp, expertUpV,  biasUp, biasUpV,
       static_cast<AccumType>(kArgs.swishAlpha), static_cast<AccumType>(kArgs.swishBeta),
       expertDown, biasDown, ctx.tokenIndices, moeOut, producerBM, stateNumber, symHeap, pA);

@@ -133,7 +133,7 @@ static void moe_forward(const std::uintptr_t& raw_ctx,
     reinterpret_cast<const cuda::std::byte*>(localExpertDownWeights),
     reinterpret_cast<const cuda::std::byte*>(localBiasDown),
     reinterpret_cast<const int*>(expertCounts), reinterpret_cast<cuda::std::byte*>(moeOut),
-    S, H, I, E, EC, Arch, mt, isGated ? swishAlpha : 1.f, isGated ? swishBeta : 1.f, false
+    S, H, I, E, EC, Arch, mt, bM, isGated ? swishAlpha : 1.f, isGated ? swishBeta : 1.f, false
   };
 
   flashmoe::moe::forwardHost<Config, topo, act>(kArgs, *ctx, stream);

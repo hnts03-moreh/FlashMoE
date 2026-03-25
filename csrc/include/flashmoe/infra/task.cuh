@@ -54,14 +54,14 @@ namespace flashmoe {
 
         // GEMM0->GEMM1
         __device__ __forceinline__
-        Task(const Ingredients& _ingredients,
-            const cuda::std::byte* const& _aData,
-            const cuda::std::array<cuda::std::byte*, GEMMs>& _cData,
-            cuda::std::byte* const& _rcData,
-            uint64_t* const& _flags,
-            const unsigned int& _syncIdx, const unsigned int& tile):
-        ingredients(_ingredients), aData(_aData), cData(_cData), rcData(_rcData), flags(_flags),
-        syncIdx(_syncIdx), tileIdx(tile){}
+        Task(const Ingredients& ingredients_,
+            const cuda::std::byte* const& aData_,
+            const cuda::std::array<cuda::std::byte*, GEMMs>& cData_,
+            cuda::std::byte* const& rcData_,
+            uint64_t* const& flags_,
+            const unsigned int& syncIdx_, const unsigned int& tile):
+        ingredients(ingredients_), aData(aData_), cData(cData_), rcData(rcData_), flags(flags_),
+        syncIdx(syncIdx_), tileIdx(tile){}
 
         // Combine
         __device__ __forceinline__
