@@ -206,7 +206,7 @@ set(CMAKE_CUDA_ARCHITECTURES "native") # or your own architecture
 CPMAddPackage(
   NAME flashmoe
   GITHUB_REPOSITORY osayamenja/flashmoe
-  GIT_TAG v0.1.1
+  GIT_TAG v0.1.2
 )
 
 target_link_libraries(app PRIVATE flashmoe::flashmoe)
