@@ -13,9 +13,6 @@ requires-python = ">=3.10"
 authors = [
   { name = "Osayamen Jonathan Aimuyo", email = "osayamen@stanford.edu" },
 ]
-dependencies = [
-    "cuda-core==0.4.0" # this is due to nvshmem, will relax soon.
-]
 
 [project.optional-dependencies]
 cu12 = ["nvshmem4py-cu12"]

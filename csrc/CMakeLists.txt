@@ -222,6 +222,9 @@ set_target_properties(testFlashMoE PROPERTIES
         CUDA_RESOLVE_DEVICE_SYMBOLS ON
 )
 flash_target_lto(testFlashMoE)
+set(ENV{NVSHMEM_BUILD_LTOIR_LIBRARY} ON)
+set(NVSHMEM_BUILD_LTOIR_LIBRARY ON)
+
 # WAR for build failure
 if (NOT DEFINED ENV{NVSHMEM_LIB_HOME})
     message(FATAL_ERROR "NVSHMEM_LIB_HOME not defined")

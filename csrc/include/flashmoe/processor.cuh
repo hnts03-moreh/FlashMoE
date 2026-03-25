@@ -173,16 +173,21 @@ namespace flashmoe::processor
   void notifyNext(void* __restrict__ const& workspace, const Task& task, Task* __restrict__ const& tQ,
                   const uint& tasks, const uint& flagColStride,
                   const uint& offset, uint* __restrict__ const& tQH) {
-    auto* __restrict__ sTQ = static_cast<Task*>(workspace);
     auto ingredients = task.ingredients;
     ingredients.taskType = TaskType::GEMM1;
     // registers -> shared memory
+    static_assert(sizeof(Task) % sizeof(uint4) == 0 && alignof(Task) % sizeof(uint4) == 0);
+    static_assert(cuda::std::is_trivially_copyable_v<Task>);
+    using TVT = cutlass::AlignedArray<uint4, sizeof(Task) / sizeof(uint4)>;
+    auto* __restrict__ sTQ = static_cast<TVT*>(workspace);
     for (int i = threadIdx.x; i < tasks; i += threads) {
-      sTQ[i] = Task{
-        ingredients, task.cData[0], task.cData, task.rcData,
-        task.flags + (p == PeerConnectivity::remote ? 0 : i * flagColStride), // col-major indexing
-        task.syncIdx, offset + i
-      };
+      const auto tvv = cuda::std::bit_cast<TVT>(
+        Task{
+          ingredients, task.cData[0], task.cData, task.rcData,
+          task.flags + (p == PeerConnectivity::remote ? 0 : i * flagColStride), // col-major indexing
+          task.syncIdx, offset + i
+      });
+      sTQ[i] = tvv;
     }
     __syncthreads();
     // shared memory to global memory
@@ -222,8 +227,7 @@ namespace flashmoe::processor
              const int& S, // sequence length
              const int& H, // token hidden dimension
              const int& I, // FFN intermediate size
-             const int& E, // total number of experts
-             const int& roundEC,
+             const uint& roundEC,
              const uint& flagColStride, // ecTilesM * E
              const uint& tilesN0, // I / bN0
              const uint& tilesN1, // H / bN1
@@ -409,9 +413,8 @@ namespace flashmoe::processor
           constexpr int bM = cute::get<0>(Tiler{});
           constexpr int bN = cute::get<1>(Tiler{});
           constexpr int Arch = TileGEMM1::TileArch::value;
-          const auto tIds = cute::make_tensor(cute::make_gmem_ptr(tokenIndices),
-            cute::make_layout(cute::make_shape(E, roundEC), cute::LayoutRight{}));
-          const auto* __restrict__ tokenIds = &tIds(task.expertIdx(), task.tokenBatchStart());
+          // tIds has shape [E, roundEC] with a row-major layout
+          const auto* __restrict__ tokenIds = tokenIndices + (task.expertIdx() * roundEC + task.tokenBatchStart());
           combine<bM, bN, Arch, threads, combineMode>(S, H, workspace, tokenIds, moeOutput, tokens, task.tileSize(),
           tileCoord);
         }

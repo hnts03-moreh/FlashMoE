@@ -134,8 +134,8 @@ namespace flashmoe
             auto* __restrict__ localPH = peerHeap + intraIdx * vH;
             const auto* __restrict__ aP = vTokens + tokenIdx * vH;
             // coalesced vectorized copy
-            for (int k = threadIdx.x; k < vH; k += threads) {
-              const auto v = cuda::ptx::ld_L1_no_allocate(cuda::ptx::space_global, aP + k);
+            for (int k = static_cast<int>(threadIdx.x); k < vH; k += threads) {
+              const auto v = cuda::ptx::ld_nc_L1_no_allocate_L2_256B(cuda::ptx::space_global, aP + k);
               cuda::ptx::st(cuda::ptx::space_global, localPH + k, v);
             }
           }
@@ -156,8 +156,8 @@ namespace flashmoe
               const auto intraIdx = lBid + (j + trips * batch) * superBlockSize;
               auto* __restrict__ localPH = peerHeap + intraIdx * vH;
               const auto* __restrict__ aP = vTokens + tokenIdx * vH;
-              for (int k = threadIdx.x; k < vH; k += threads) {
-                const auto v = cuda::ptx::ld_L1_no_allocate(cuda::ptx::space_global, aP + k);
+              for (int k = static_cast<int>(threadIdx.x); k < vH; k += threads) {
+                const auto v = cuda::ptx::ld_nc_L1_no_allocate_L2_256B(cuda::ptx::space_global, aP + k);
                 cuda::ptx::st(cuda::ptx::space_global, localPH + k, v);
               }
             }

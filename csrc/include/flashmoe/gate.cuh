@@ -522,7 +522,7 @@ namespace flashmoe::gate
         }
       }
       __shared__ int startIndices[bN];
-      using BTS = BlockScan<threads>::TempStorage; // :)
+      using BTS = BlockScan<threads>::TempStorage;
       __shared__ __align__(alignof(BTS)) BTS scanTempStorage[bN];
       int myIndices[bN];
       // scan down the column

@@ -94,7 +94,7 @@ namespace flashmoe::moe
     const uint& k, const int& blocksPerSM, const int& numSMs) {
     const auto processorBlocks = (cute::ceil_div(S * k, bM) * ((I / bN0) + (H / bN1))) +
     (cute::ceil_div(S * k, bM) * (H / bN1));
-    const auto dispatchBlocks = min(dispatchSuperBlockSize(E) * E, MAX_DISPATCH_BLOCKS);
+    const auto dispatchBlocks = cute::min(dispatchSuperBlockSize(E) * E, MAX_DISPATCH_BLOCKS);
     return cute::max(cute::min(cute::max(processorBlocks, dispatchBlocks) + 1, blocksPerSM * numSMs), 2);
   }
   struct KernelArgs {
@@ -231,8 +231,9 @@ namespace flashmoe::moe
     const auto* __restrict__ biasDown = reinterpret_cast<const DataType*>(kArgs.biasDown);
     auto* __restrict__ moeOut = reinterpret_cast<DataType*>(kArgs.moeOut);
     // processor
+    const auto flagColStride = ecTilesM * kArgs.E;
     processor::start<Config::MT::value, topo, threads, Config::CM::value, TileGEMM0, TileGEMM1, GEMM0Act>
-    (flashWorkspace, kArgs.S, kArgs.H, kArgs.I, kArgs.E, roundEC, ecTilesM * kArgs.E, tilesN0, tilesN1,
+    (flashWorkspace, kArgs.S, kArgs.H, kArgs.I, roundEC, flagColStride, tilesN0, tilesN1,
       expertUp, expertUpV,  biasUp, biasUpV,
       static_cast<AccumType>(kArgs.swishAlpha), static_cast<AccumType>(kArgs.swishBeta),
       expertDown, biasDown, ctx.tokenIndices, moeOut, producerBM, stateNumber, symHeap, pA);

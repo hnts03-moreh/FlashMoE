@@ -69,7 +69,7 @@ set(PYBIND11_FINDPYTHON ON)
 CPMAddPackage(
   NAME pybind11
   GITHUB_REPOSITORY pybind/pybind11
-  VERSION 3.0.1
+  VERSION 3.0.2
 )
 if(NOT COMMAND pybind11_add_module)
     message(FATAL_ERROR "pybind11 not found")
@@ -79,7 +79,7 @@ pybind11_add_module(${TARGET_MODULE_NAME} MODULE ${GENERATED_SRC})
 CPMAddPackage(
         NAME flashmoe
         GITHUB_REPOSITORY osayamenja/flashmoe
-        GIT_TAG v0.1.0
+        GIT_TAG main
 )
 
 target_link_libraries(${TARGET_MODULE_NAME} PRIVATE flashmoe::flashmoe)
