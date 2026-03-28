@@ -222,9 +222,10 @@ and include the header file like below. See `csrc/tests/flashmoe.cu` for more us
 
 ### ✅ Roadmap
 - [ ] Improve MMA for Hopper (WGMMA) and Blackwell (UTCMMA).
-- [ ] FP8 support
+- [ ] FP8
 - [ ] Shared experts
 - [ ] AMD support
+- [ ] Backward pass
 
 ---
 
