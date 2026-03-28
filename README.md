@@ -53,7 +53,7 @@ We address these inefficiencies through **complete kernel fusion**, enabling:
 
 1. **Fine-grained overlap of communication and computation** at tile granularity  
 2. **Latency hiding of preprocessing and system overheads** via SM specialization  
-3. **Exploitation of task locality at scale**, allowing SMs to execute ready tasks out-of-order, minimizing idle and boosting resource utilization.
+3. **Exploitation of task locality at scale**, allowing SMs to execute ready tasks out-of-order, minimizing tensor core idle time and boosting SM utilization.
 
 In contrast, existing implementations rely on tens to hundreds of serialized kernels, enforcing strict execution order
 and limiting _task locality_.
