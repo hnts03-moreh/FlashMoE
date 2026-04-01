@@ -8,7 +8,17 @@
 #ifndef GATE_CUH
 #define GATE_CUH
 
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/device.h"
+#include "flashmoe/platform/intrinsics.h"
+#include "flashmoe/platform/math_compat.h"
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+#include <hipcub/hipcub.hpp>
+namespace cub = hipcub;
+#else
 #include <cub/cub.cuh>
+#endif
 
 #include "context.cuh"
 #include "infra/atomics.cuh"
@@ -143,7 +153,7 @@ namespace flashmoe::gate
       /// Epilogue -> RingSoftmax + topk + routing table construction
       // assumes row-major as we would be performing the softmax on the row
       using AccumType = decltype(accumulator)::value_type;
-      auto sC = cublasdx::make_tensor(
+      auto sC = flashmoe_blas::make_tensor(
         cute::make_smem_ptr(static_cast<AccumType*>(gateScratch)),
         cute::Layout<cute::Shape<cute::Int<bM>, cute::Int<bN>>,
                      cute::Stride<cute::Int<bN>, cute::_1>>{});
@@ -154,7 +164,7 @@ namespace flashmoe::gate
       static_assert(bN % vectorWidth == 0);
       constexpr int vbN = bN / VTD::VectorWidth::value;
       // assumes row-major
-      auto vsC = cublasdx::make_tensor(
+      auto vsC = flashmoe_blas::make_tensor(
         cute::make_smem_ptr(static_cast<VT*>(gateScratch)),
         cute::Layout<cute::Shape<cute::Int<bM>, cute::Int<vbN>>,
                      cute::Stride<cute::Int<vbN>, cute::_1>>{});
@@ -162,7 +172,7 @@ namespace flashmoe::gate
       constexpr Converter<SoftType, AccumType> softLoad{};
       constexpr Converter<ElementC, AccumType> softStore{};
       // rmem -> smem
-      cublasdx::copy_fragment<TileGEMM::CAlign::value>(c_frag, sC, accumulator);
+      flashmoe_blas::copy_fragment<TileGEMM::CAlign::value>(c_frag, sC, accumulator);
       __syncthreads();
       // TODO relax this
       static_assert(threads >= bM);
@@ -249,10 +259,10 @@ namespace flashmoe::gate
       if constexpr (r == ReturnLogits::yes) {
         auto gC = tile::getC<bM, bN, TileGEMM::CArr::value>(reinterpret_cast<ElementC*>(kArgs.routing), kArgs.S, kArgs.E,
         cute::select<0, 1>(tileCoord));
-        const auto tsC = cublasdx::make_tensor(
+        const auto tsC = flashmoe_blas::make_tensor(
           static_cast<ElementC*>(gateScratch), TileGEMM::BLAS::get_layout_smem_c());
         static_assert(cute::is_compatible<decltype(gC.layout()), decltype(tsC.layout())>::value);
-        cublasdx::copy<TileGEMM::BLAS, ElementAlignment<ElementC, bN>>(tsC, gC);
+        flashmoe_blas::copy<TileGEMM::BLAS, ElementAlignment<ElementC, bN>>(tsC, gC);
       }
       int rTK[bN];
       #pragma unroll
@@ -422,7 +432,7 @@ namespace flashmoe::gate
       auto mI = -cuda::std::numeric_limits<SoftType>::infinity();
       // assumes row-major as we would be performing the softmax on the row
       using AccumType = decltype(accumulator)::value_type;
-      auto sC = cublasdx::make_tensor(
+      auto sC = flashmoe_blas::make_tensor(
         cute::make_smem_ptr(static_cast<AccumType*>(gateScratch)),
         cute::Layout<cute::Shape<cute::Int<bM>, cute::Int<bN>>,
                      cute::Stride<cute::Int<bN>, cute::_1>>{});
@@ -433,7 +443,7 @@ namespace flashmoe::gate
       static_assert(bN % vectorWidth == 0);
       constexpr int vbN = bN / VTD::VectorWidth::value;
       // assumes row-major
-      auto vsC = cublasdx::make_tensor(
+      auto vsC = flashmoe_blas::make_tensor(
         cute::make_smem_ptr(static_cast<VT*>(gateScratch)),
         cute::Layout<cute::Shape<cute::Int<bM>, cute::Int<vbN>>,
                      cute::Stride<cute::Int<vbN>, cute::_1>>{});
@@ -441,7 +451,7 @@ namespace flashmoe::gate
       constexpr Converter<SoftType, AccumType> softLoad{};
       constexpr Converter<ElementC, AccumType> softStore{};
       // rmem -> smem
-      cublasdx::copy_fragment<TileGEMM::CAlign::value>(c_frag, sC, accumulator);
+      flashmoe_blas::copy_fragment<TileGEMM::CAlign::value>(c_frag, sC, accumulator);
       __syncthreads();
       // TODO relax this
       static_assert(threads >= bM);
@@ -488,10 +498,10 @@ namespace flashmoe::gate
         // smem -> gmem
         auto gC = tile::getC<bM, bN, TileGEMM::CArr::value>(reinterpret_cast<ElementC*>(kArgs.routing),
           kArgs.S, kArgs.E,cute::select<0, 1>(tileCoord));
-        const auto tsC = cublasdx::make_tensor(
+        const auto tsC = flashmoe_blas::make_tensor(
           static_cast<ElementC*>(gateScratch), TileGEMM::BLAS::get_layout_smem_c());
         static_assert(cute::is_compatible<decltype(gC.layout()), decltype(tsC.layout())>::value);
-        cublasdx::copy<TileGEMM::BLAS, ElementAlignment<ElementC, bN>>(tsC, gC);
+        flashmoe_blas::copy<TileGEMM::BLAS, ElementAlignment<ElementC, bN>>(tsC, gC);
       }
       int rTK[bN];
       #pragma unroll

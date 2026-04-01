@@ -7,6 +7,11 @@
 
 #ifndef FLASHMOE_COMBINE_CUH
 #define FLASHMOE_COMBINE_CUH
+
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/device.h"
+#include "flashmoe/platform/math_compat.h"
+
 #include "infra/packed.cuh"
 #include "tile.cuh"
 #include "infra/rvt.cuh"
@@ -30,7 +35,7 @@ namespace flashmoe
     int Arch,
     int threads,
     CombineMode c,
-    cublasdx::arrangement cArr = cublasdx::row_major,
+    flashmoe_blas::arrangement cArr = flashmoe_blas::row_major,
     typename Element,
     typename TileCoord
   >
@@ -43,9 +48,9 @@ namespace flashmoe
                const uint& tileSize, const TileCoord& tileCoord) {
     static_assert(cute::rank_v<TileCoord> == 2);
     static_assert(decltype(cute::get<0>(tileCoord))::value == 0);
-    static_assert(cArr == cublasdx::row_major);
+    static_assert(cArr == flashmoe_blas::row_major);
     __shared__ TPS stIds[bM];
-    using SCS = cuda::std::conditional_t<cArr == cublasdx::row_major, cute::Stride<cute::Int<bN>, cute::_1>,
+    using SCS = cuda::std::conditional_t<cArr == flashmoe_blas::row_major, cute::Stride<cute::Int<bN>, cute::_1>,
                                          cute::Stride<cute::_1, cute::Int<bM>>>;
     using SCL = cute::Layout<cute::Shape<cute::Int<bM>, cute::Int<bN>>, SCS>;
     auto sC = cute::make_tensor(cute::make_smem_ptr(static_cast<Element*>(workspace)),
@@ -57,8 +62,8 @@ namespace flashmoe
       stIds[i] = tokenIndices[i];
     }
     // copy processed tile from gmem -> smem
-    cublasdx::copy<threads, ElementAlignment<Element, bN>>(threadIdx.x, gC, sC);
-    cublasdx::copy_wait();
+    flashmoe_blas::copy<threads, ElementAlignment<Element, bN>>(threadIdx.x, gC, sC);
+    flashmoe_blas::copy_wait();
     __syncthreads();
     if constexpr (c == CombineMode::single) {
       using VTD = VectorTypeDescriptor<Element, ElementAlignment<Element, bN>>;
@@ -141,7 +146,7 @@ namespace flashmoe
                                   cute::make_layout(cute::make_shape(S, vHo), cute::LayoutRight{}));
       auto tC = cute::local_tile(mC, cute::make_shape(S, cute::Int<bNp>{}), tileCoord);
 
-      constexpr auto totalElems = bM * rbN; // cublasdx::cosize(RSL{})
+      constexpr auto totalElems = bM * rbN; // flashmoe_blas::cosize(RSL{})
       const auto actualElems = tileSize * rbN;
       constexpr auto redElemsPerThread = totalElems / threads;
       constexpr int packWidth = RVD::VectorWidth::value;

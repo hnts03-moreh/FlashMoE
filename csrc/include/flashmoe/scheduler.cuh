@@ -9,11 +9,21 @@
 #ifndef SCHEDULER_CUH
 #define SCHEDULER_CUH
 
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/atomic.h"
+#include "flashmoe/platform/intrinsics.h"
+#include "flashmoe/platform/math_compat.h"
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+#include <hipcub/hipcub.hpp>
+namespace cub = hipcub;
+#else
 #include <cub/cub.cuh>
 #include <cuda/atomic>
 #include <cuda/cmath>
 #include <cute/numeric/integral_constant.hpp>
 #include <cutlass/array.h>
+#endif
 
 #include "infra/constants.cuh"
 #include "infra/bitset.cuh"
@@ -26,7 +36,7 @@ namespace flashmoe::scheduler
   __device__ __forceinline__
   auto circularIdx(const uint& cursor, const cuda::fast_mod_div<uint>& len) {
     //https://nvidia.github.io/cccl/libcudacxx/extended_api/math/fast_mod_div.html#libcudacxx-extended-api-math-fast-mod-div
-#if defined(__CUDA_ARCH__)
+#if defined(__CUDA_ARCH__) && !defined(FLASHMOE_PLATFORM_HIP)
     __builtin_assume(cursor != cuda::std::numeric_limits<uint>::max());
 #endif
     return cursor % len;
@@ -345,7 +355,7 @@ namespace flashmoe::scheduler
       cuda::atomic_ref<unsigned int, cuda::thread_scope_block> tb{*taskBound};
       tTB = tb.load(cuda::memory_order_relaxed);
     }
-    tTB = __shfl_sync(0xffffffff, tTB, 0);
+    tTB = __shfl_sync(FLASHMOE_FULL_LANE_MASK, tTB, 0);
     while (scheduled < tTB) {
       // statically sweep tQ for tasks
       uint lTt = 0U; // local task tally
@@ -445,7 +455,7 @@ namespace flashmoe::scheduler
         tTB = tb.load(cuda::memory_order_relaxed);
       }
       __syncwarp();
-      tTB = __shfl_sync(0xffffffff, tTB, 0);
+      tTB = __shfl_sync(FLASHMOE_FULL_LANE_MASK, tTB, 0);
     }
     __syncwarp();
     // interrupt subscribers

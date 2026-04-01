@@ -5,6 +5,8 @@
 #ifndef FLASHMOE_SIGNAL_CUH
 #define FLASHMOE_SIGNAL_CUH
 
+#include "flashmoe/platform/platform.h"
+
 namespace flashmoe {
   enum class Topology: uint16_t {
     NVLINK_ONLY = 0,

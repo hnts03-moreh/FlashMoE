@@ -8,8 +8,25 @@
 
 #ifndef FLASHMOE_SUBSCRIBER_CUH
 #define FLASHMOE_SUBSCRIBER_CUH
-#include <cuda/atomic>
-#include <nvshmem.h>
+
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/intrinsics.h"
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+#  include "flashmoe/platform/math_compat.h"
+#  include "flashmoe/platform/atomic.h"
+#else
+#  include <cuda/atomic>
+#endif
+
+// NVSHMEM / ROCSHMEM
+#if defined(FLASHMOE_PLATFORM_HIP)
+#  if __has_include("flashmoe/platform/shmem.h")
+#    include "flashmoe/platform/shmem.h"
+#  endif
+#else
+#  include <nvshmem.h>
+#endif
 
 #include "infra/atomics.cuh"
 #include "infra/bitset.cuh"
@@ -177,7 +194,12 @@ namespace flashmoe::subscriber
       // Note: we intentionally modeled the Task struct so that the below compiles to a single 128B
       // instruction rather than 4 of them, which would have been the case if we updated the entire Task object.
       auto* tQp = &((args.tQ + DQ::sNext<DQType::stride, subscriberCount>(lTQHead++))->ingredients);
+#if defined(FLASHMOE_PLATFORM_HIP)
+      // HIP: no cuda::ptx; use direct store (compiler will optimize to 128-bit store)
+      *tQp = ingredients;
+#else
       cuda::ptx::st(cuda::ptx::space_global, tQp, ingredients);
+#endif
       cuda::atomic_ref<unsigned int, cuda::thread_scope_block> tqh{*args.tQHead};
       // notifies scheduler of work
       cuda::std::ignore = tqh.fetch_add(1, cuda::memory_order_release);
@@ -192,7 +214,12 @@ namespace flashmoe::subscriber
       for (uint i = 0; i < args.tilesN1; ++i) {
         ingredients.stash = i;
         auto* tQp = &((args.tQ + DQ::next<DQType::stride, subscriberCount>(qIdx, i))->ingredients);
-        cuda::ptx::st(cuda::ptx::space_global, tQp, ingredients);
+  #if defined(FLASHMOE_PLATFORM_HIP)
+      // HIP: no cuda::ptx; use direct store (compiler will optimize to 128-bit store)
+      *tQp = ingredients;
+#else
+      cuda::ptx::st(cuda::ptx::space_global, tQp, ingredients);
+#endif
       }
       lTQHead += args.tilesN1;
       cuda::atomic_ref<unsigned int, cuda::thread_scope_block> tqh{*args.tQHead};
@@ -253,7 +280,7 @@ namespace flashmoe::subscriber
           if (!visitedSet.get(vIdx)) {
             if (topo == Topology::MIXED && pLI.isRemote) {
               // RDMA peer
-              signal = nvshmem_signal_fetch(flags + flagIdx);
+              signal = flashmoe::shmem::device::signal_fetch(flags + flagIdx);
               const auto sigPayload = cuda::std::bit_cast<SignalPayload<PacketStage::initial>>(signal);
               if (sigPayload.stateNumber == currentStateNumber) {
                 // set visited bit
@@ -262,7 +289,7 @@ namespace flashmoe::subscriber
                 visitedSet.set(vIdx);
 
                 // enforce memory consistency of expected packet
-                const bool isPacketHere = nvshmem_uint64_test(flags + flagIdx,NVSHMEM_CMP_EQ, signal);
+                const bool isPacketHere = flashmoe::shmem::device::uint64_test(flags + flagIdx, SHMEM_CMP_EQ, signal);
                 if (!isPacketHere) {
                   /*this scenario means that this peer sent another packet in between us
                   observing the signal and testing the signal's presence.
@@ -315,7 +342,7 @@ namespace flashmoe::subscriber
         }
         __syncwarp();
         // broadcast received signal from leader to others
-        signal = __shfl_sync(0xffffffff, signal, 0);
+        signal = __shfl_sync(FLASHMOE_FULL_LANE_MASK, signal, 0);
         const auto sigPayload = cuda::std::bit_cast<SignalPayload<PacketStage::initial>>(signal);
         const bool expected = sigPayload.stateNumber == currentStateNumber;
         const bool ahead = sbs::ahead(sigPayload.stateNumber, currentStateNumber);
@@ -380,7 +407,7 @@ namespace flashmoe::subscriber
           if (!sBS.get(bIdx)) {
             if (lookup.isRemote) {
               // RDMA peer
-              const auto signal = nvshmem_signal_fetch(flags + flagIdx);
+              const auto signal = flashmoe::shmem::device::signal_fetch(flags + flagIdx);
               const auto sigPayload = cuda::std::bit_cast<SignalPayload<PacketStage::last>>(signal);
               const auto expected = expectedState(senseBitSet.get(bIdx),
                                                   sigPayload.senseBit, args.stateNumber,
@@ -391,7 +418,7 @@ namespace flashmoe::subscriber
                 // flip sense bit
                 senseBitSet.flip(bIdx);
                 // enforce memory consistency
-                const bool isPacketHere = nvshmem_uint64_test(flags + flagIdx, NVSHMEM_CMP_EQ,
+                const bool isPacketHere = flashmoe::shmem::device::uint64_test(flags + flagIdx, SHMEM_CMP_EQ,
                                                               signal);
                 if (__builtin_expect(!isPacketHere, 0)) {
                   // protocol violation, this should be impossible
@@ -455,7 +482,7 @@ namespace flashmoe::subscriber
           const auto lookup = args.eL[expertIdx];
           if (!sBS.get(bIdx)) {
             if (lookup.isRemote) {
-              const auto signal = nvshmem_signal_fetch(flags + flagIdx);
+              const auto signal = flashmoe::shmem::device::signal_fetch(flags + flagIdx);
               const auto sigPayload = cuda::std::bit_cast<SignalPayload<PacketStage::last>>(signal);
               const auto expected = expectedState(senseBitSet.get(bIdx),
                                                   sigPayload.senseBit, args.stateNumber,
@@ -464,7 +491,7 @@ namespace flashmoe::subscriber
                 sBS.set(bIdx);
                 // flip sense bit
                 senseBitSet.flip(bIdx);
-                const bool isPacketHere = nvshmem_uint64_test(flags + flagIdx, NVSHMEM_CMP_EQ,
+                const bool isPacketHere = flashmoe::shmem::device::uint64_test(flags + flagIdx, SHMEM_CMP_EQ,
                                                               signal);
                 if (__builtin_expect(!isPacketHere, 0)) {
                   __trap();
@@ -637,7 +664,7 @@ namespace flashmoe::subscriber
       cuda::atomic_ref<uint, cuda::thread_scope_block> inr{*args.interrupt};
       interrupt = inr.load(cuda::memory_order_relaxed);
     }
-    interrupt = __shfl_sync(0xffffffff, interrupt, 0);
+    interrupt = __shfl_sync(FLASHMOE_FULL_LANE_MASK, interrupt, 0);
     while (!interrupt) {
       auto* __restrict__ flags = args.flags;
       // sweep through flags by stages
@@ -651,7 +678,7 @@ namespace flashmoe::subscriber
         cuda::atomic_ref<uint, cuda::thread_scope_block> inr{*args.interrupt};
         interrupt = inr.load(cuda::memory_order_relaxed);
       }
-      interrupt = __shfl_sync(0xffffffff, interrupt, 0);
+      interrupt = __shfl_sync(FLASHMOE_FULL_LANE_MASK, interrupt, 0);
     }
   }
 }

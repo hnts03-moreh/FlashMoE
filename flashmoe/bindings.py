@@ -1,10 +1,29 @@
 from string import Template
 
+# ---------------------------------------------------------------------------
+# Shared preamble: platform-aware includes and CHECK_GPU macro
+# ---------------------------------------------------------------------------
+# On HIP builds, FLASHMOE_PLATFORM_HIP is defined by CMake so the platform
+# headers automatically pull in <hip/hip_runtime.h> and map all cuda* symbols
+# to hip* equivalents.  On CUDA builds, the original cuda_runtime.h path is
+# preserved via the same headers.
+# ---------------------------------------------------------------------------
+
+_platform_preamble = r"""
+#include "flashmoe/platform/runtime.h"
+#include "flashmoe/platform/device.h"
+
+// Provide cuda::std:: compatibility on HIP via math_compat.h
+#if defined(FLASHMOE_PLATFORM_HIP)
+#  include "flashmoe/platform/math_compat.h"
+#endif
+"""
+
 flashmoe_bindings = Template(r"""
 #include <cstdint>
 #include <stdexcept>
 
-#include <cuda_runtime.h>
+""" + _platform_preamble + r"""
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -14,20 +33,6 @@ flashmoe_bindings = Template(r"""
 #include <flashmoe/moe.cuh>
 
 #include <cstdio>
-#if !defined(CHECK_CUDA)
-#  define CHECK_CUDA(e)                                      \
-do {                                                         \
-    cudaError_t code = (e);                                  \
-    if (code != cudaSuccess) {                               \
-        fprintf(stderr, "<%s:%d> %s:\n    %s: %s\n",         \
-            __FILE__, __LINE__, #e,                          \
-            cudaGetErrorName(code),                          \
-            cudaGetErrorString(code));                       \
-        fflush(stderr);                                      \
-        exit(1);                                             \
-    }                                                        \
-} while (0)
-#endif
 
 namespace py = pybind11;
 
@@ -69,7 +74,7 @@ static std::uintptr_t moe_initialize(const size_t& numExperts, const size_t& EC,
   const int& epWorld, const int& myPE, const int& epRank, const int& devId, const int& nLx,
   const std::vector<int>& expertToEpRank, const std::vector<int> &epRankToGlobalRank,
   const std::uintptr_t& stream_ptr) {
-  auto stream = reinterpret_cast<cudaStream_t>(stream_ptr);
+  auto stream = reinterpret_cast<gpuStream_t>(stream_ptr);
   if (expertToEpRank.size() != numExperts) {
     throw std::invalid_argument("expert map size should be == # of experts");
   }
@@ -80,17 +85,17 @@ static std::uintptr_t moe_initialize(const size_t& numExperts, const size_t& EC,
   auto kernel = flashmoe::moe::forward<Config, act, topo>;
   const auto smemSize = flashmoe::moe::kernelSMEM<Config>(numExperts, EC, epWorld, nLx, H / bN1);
   int maxSharedMemory = 0;
-  CHECK_CUDA(cudaDeviceGetAttribute(&maxSharedMemory,cudaDevAttrMaxSharedMemoryPerBlockOptin, devId));
+  CHECK_GPU(gpuDeviceGetAttribute(&maxSharedMemory, gpuDevAttrMaxSharedMemoryPerBlockOptin, devId));
   if (smemSize > maxSharedMemory) {
     const auto errmsg = std::string("Required shared memory ").append(std::to_string(smemSize))
     .append(" exceeds hardware limits: ").append(std::to_string(maxSharedMemory)).append(" Reduce tile shapes or input sizes.");
     throw std::runtime_error(errmsg);
   }
   int numSMs = 0;
-  CHECK_CUDA(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, devId));
-  CHECK_CUDA(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smemSize));
+  CHECK_GPU(gpuDeviceGetAttribute(&numSMs, gpuDevAttrMultiProcessorCount, devId));
+  CHECK_GPU(gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smemSize));
   int blocksPerSM = 0;
-  CHECK_CUDA(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocksPerSM, kernel, threads, smemSize));
+  CHECK_GPU(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&blocksPerSM, kernel, threads, smemSize));
   const auto blocks = flashmoe::moe::kernelBlocks<bM, bN0, bN1>(S, H, I, numExperts, topK, blocksPerSM, numSMs);
   const flashmoe::MoEArgs args{
     sizeof(Element),
@@ -122,7 +127,7 @@ static void moe_forward(const std::uintptr_t& raw_ctx,
   const float& swishAlpha, const float& swishBeta,
   const std::uintptr_t& stream_ptr) {
   const auto* ctx = reinterpret_cast<flashmoe::Context*>(raw_ctx);
-  auto stream = reinterpret_cast<cudaStream_t>(stream_ptr);
+  auto stream = reinterpret_cast<gpuStream_t>(stream_ptr);
   constexpr auto isGated = mt == flashmoe::MLPMatmulType::gated;
   const flashmoe::moe::KernelArgs kArgs{
     reinterpret_cast<const cuda::std::byte*>(tokens),
@@ -145,7 +150,7 @@ static std::uintptr_t get_token_indices(const std::uintptr_t& raw_ctx) {
 
 static void moe_finalize(const std::uintptr_t& raw_ctx, const std::uintptr_t& stream_ptr) {
   const auto* ctx = reinterpret_cast<flashmoe::Context*>(raw_ctx);
-  auto stream = reinterpret_cast<cudaStream_t>(stream_ptr);
+  auto stream = reinterpret_cast<gpuStream_t>(stream_ptr);
   if (!ctx) return;
   flashmoe::finalize(*ctx, stream);
   delete ctx;
@@ -165,16 +170,16 @@ PYBIND11_MODULE($mod_name, m) {
     py::arg("stream_ptr"));
   m.def("forward", &moe_forward,
     py::arg("raw_ctx"),
-    py::arg("tokens"), 
-    py::arg("expert_counts"), 
+    py::arg("tokens"),
+    py::arg("expert_counts"),
     py::arg("local_expert_up"),
-    py::arg("local_expert_up_v"), 
-    py::arg("local_bias_up"), 
+    py::arg("local_expert_up_v"),
+    py::arg("local_bias_up"),
     py::arg("local_bias_up_v"),
-    py::arg("local_expert_down"), 
-    py::arg("local_bias_down"), 
+    py::arg("local_expert_down"),
+    py::arg("local_bias_down"),
     py::arg("moe_out"),
-    py::arg("swish_alpha"), 
+    py::arg("swish_alpha"),
     py::arg("swish_beta"),
     py::arg("stream_ptr"));
   m.def("get_tIdx", &get_token_indices,
@@ -190,26 +195,14 @@ gate_bindings = Template(r"""
 #include <stdexcept>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-#include <cuda_runtime.h>
+
+""" + _platform_preamble + r"""
 
 #include <flashmoe/bootstrap.cuh>
 #include <flashmoe/gate.cuh>
 
 #include <cstdio>
-#if !defined(CHECK_CUDA)
-#  define CHECK_CUDA(e)                                      \
-do {                                                         \
-    cudaError_t code = (e);                                  \
-    if (code != cudaSuccess) {                               \
-        fprintf(stderr, "<%s:%d> %s:\n    %s: %s\n",         \
-            __FILE__, __LINE__, #e,                          \
-            cudaGetErrorName(code),                          \
-            cudaGetErrorString(code));                       \
-        fflush(stderr);                                      \
-        exit(1);                                             \
-    }                                                        \
-} while (0)
-#endif
+
 namespace py = pybind11;
 
 constexpr int S = $s; // jit value
@@ -238,21 +231,21 @@ constexpr auto smemSize = flashmoe::gate::kernelSMEM<bM, bN, bK, pSK, Element>()
 using GEMMTile = cute::Shape<cute::Int<bM>, cute::Int<bN>, cute::Int<bK>, cute::Int<pSK>>;
 
 static std::uintptr_t gate_initialize(const int& devId, const std::uintptr_t stream_ptr) {
-  auto stream = reinterpret_cast<cudaStream_t>(stream_ptr);
+  auto stream = reinterpret_cast<gpuStream_t>(stream_ptr);
   auto kernel = flashmoe::gate::forwardKernel<GEMMTile, Arch, threads, grl, sro, rl, AccumType, Element, ElementRouting>;
-  
+
   int maxSharedMemory = 0;
-  CHECK_CUDA(cudaDeviceGetAttribute(&maxSharedMemory,cudaDevAttrMaxSharedMemoryPerBlockOptin, devId));
+  CHECK_GPU(gpuDeviceGetAttribute(&maxSharedMemory, gpuDevAttrMaxSharedMemoryPerBlockOptin, devId));
   if (smemSize > maxSharedMemory) {
     const auto errmsg = std::string("Required shared memory ").append(std::to_string(smemSize))
     .append(" exceeds hardware limits: ").append(std::to_string(maxSharedMemory)).append(" Reduce tile shapes or input sizes.");
     throw std::runtime_error(errmsg);
   }
   int numSMs = 0;
-  CHECK_CUDA(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, devId));
-  CHECK_CUDA(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smemSize));
+  CHECK_GPU(gpuDeviceGetAttribute(&numSMs, gpuDevAttrMultiProcessorCount, devId));
+  CHECK_GPU(gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smemSize));
   int blocksPerSM = 0;
-  CHECK_CUDA(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocksPerSM, kernel, threads, smemSize));
+  CHECK_GPU(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&blocksPerSM, kernel, threads, smemSize));
   const int gateBlocks = cute::min(cute::ceil_div(S, bM) * cute::ceil_div(E, bN), blocksPerSM * numSMs);
   if (E > gateBlocks * bN) {
     throw std::invalid_argument("E is too big!");
@@ -271,7 +264,7 @@ static void gate_forward(const std::uintptr_t& raw_ctx,
   const std::uintptr_t& tokenIndices_,
   const std::uintptr_t& stream_ptr) {
   const auto* ctx = reinterpret_cast<flashmoe::GateContext*>(raw_ctx);
-  auto stream = reinterpret_cast<cudaStream_t>(stream_ptr);
+  auto stream = reinterpret_cast<gpuStream_t>(stream_ptr);
   const flashmoe::gate::GateKernelArgs kArgs{
     .tokens = reinterpret_cast<const cuda::std::byte*>(tokens_),
     .weights = reinterpret_cast<const cuda::std::byte*>(weights_),
@@ -291,7 +284,7 @@ static void gate_forward(const std::uintptr_t& raw_ctx,
 
 static void gate_finalize(const std::uintptr_t& raw_ctx, const std::uintptr_t stream_ptr) {
   const auto* ctx = reinterpret_cast<flashmoe::GateContext*>(raw_ctx);
-  auto stream = reinterpret_cast<cudaStream_t>(stream_ptr);
+  auto stream = reinterpret_cast<gpuStream_t>(stream_ptr);
   if (!ctx) return;
   flashmoe::finalizeGate(*ctx, stream);
   delete ctx;
@@ -320,27 +313,14 @@ reference_bindings = Template(r"""
 #include <cstdint>
 #include <stdexcept>
 #include <pybind11/pybind11.h>
-#include <cuda_runtime.h>
+
+""" + _platform_preamble + r"""
 
 #include <flashmoe/tile.cuh>
 #include <flashmoe/infra/activation.cuh>
 #include <flashmoe/infra/packed.cuh>
 #include <flashmoe/infra/vt.cuh>
 
-#if !defined(CHECK_CUDA)
-#  define CHECK_CUDA(e)                                      \
-do {                                                         \
-    cudaError_t code = (e);                                  \
-    if (code != cudaSuccess) {                               \
-        fprintf(stderr, "<%s:%d> %s:\n    %s: %s\n",         \
-            __FILE__, __LINE__, #e,                          \
-            cudaGetErrorName(code),                          \
-            cudaGetErrorString(code));                       \
-        fflush(stderr);                                      \
-        exit(1);                                             \
-    }                                                        \
-} while (0)
-#endif
 namespace py = pybind11;
 
 template<typename TileGEMM, typename Activation, flashmoe::MLPMatmulType mt, typename ElementC, typename Element>
@@ -357,13 +337,23 @@ void gemmMainloop(cuda::std::byte* __restrict__ const& workspace,
     const int& M, const int& N, const int& K, const int& tileIdx) {
   using BLAS = TileGEMM::BLAS;
   auto accumulator = BLAS::suggest_accumulator();
+#if defined(FLASHMOE_PLATFORM_HIP)
+  using BM = cute::Int<rocblasdx::size_of<BLAS>::m>;
+  using BN = cute::Int<rocblasdx::size_of<BLAS>::n>;
+#else
   using BM = cute::Int<cublasdx::size_of<BLAS>::m>;
   using BN = cute::Int<cublasdx::size_of<BLAS>::n>;
+#endif
   const auto tileCoord = flashmoe::tile::idx2Coord(M / BM{}, N / BN{}, tileIdx);
   // gmem -> rmem: prefetch bias
   const auto gD = flashmoe::tile::getBias<BM{}, BN{}>(bias, M, N, cute::select<0, 1>(tileCoord));
+#if defined(FLASHMOE_PLATFORM_HIP)
+  auto d_frag = rocblasdx::make_fragment_like<ElementC>(accumulator.get_results());
+  rocblasdx::copy_fragment<rocblasdx::alignment_of<BLAS>::c>(gD, d_frag, accumulator);
+#else
   auto d_frag = cublasdx::make_fragment_like<ElementC>(accumulator.get_results());
   cublasdx::copy_fragment<cublasdx::alignment_of<BLAS>::c>(gD, d_frag, accumulator);
+#endif
   // compute Tile
   constexpr TileGEMM tileMainloop{};
   tileMainloop(workspace, a, b, accumulator, M, N, K, tileCoord);
@@ -375,7 +365,11 @@ void gemmMainloop(cuda::std::byte* __restrict__ const& workspace,
   // accum type -> ElementC
   constexpr flashmoe::Converter<ElementC, AccumType> storeConv{};
   const auto c_frag = accumulator.get_results();
+#if defined(FLASHMOE_PLATFORM_HIP)
+  constexpr int accum_size = rocblasdx::size(c_frag);
+#else
   constexpr int accum_size = cublasdx::size(c_frag);
+#endif
   if constexpr (mt == flashmoe::MLPMatmulType::gated) {
     __syncthreads();
     auto* __restrict__ gateCache = workspace + cutlass::round_up(cute::max(TileGEMM::SharedSizeC::value,
@@ -386,20 +380,33 @@ void gemmMainloop(cuda::std::byte* __restrict__ const& workspace,
     });
     // rmem -> smem, cache gate results
     // holding in registers otherwise would blow up pressure
+#if defined(FLASHMOE_PLATFORM_HIP)
+    auto sGate = rocblasdx::make_tensor(reinterpret_cast<ElementC*>(gateCache), BLAS::suggest_layout_smem_c());
+    rocblasdx::copy_fragment<rocblasdx::alignment_of<BLAS>::c>(d_frag, sGate, accumulator);
+#else
     auto sGate = cublasdx::make_tensor(reinterpret_cast<ElementC*>(gateCache), BLAS::suggest_layout_smem_c());
     cublasdx::copy_fragment<cublasdx::alignment_of<BLAS>::c>(d_frag, sGate, accumulator);
+#endif
     // now, compute v tile
     tileMainloop(workspace, a, bV, accumulator, M, N, K, tileCoord);
     auto cv_frag = accumulator.get_results();
     const auto gV = flashmoe::tile::getBias<BM{}, BN{}>(biasV, M, N, cute::select<0, 1>(tileCoord));
+#if defined(FLASHMOE_PLATFORM_HIP)
+    rocblasdx::copy_fragment<rocblasdx::alignment_of<BLAS>::c>(gV, d_frag, accumulator);
+#else
     cublasdx::copy_fragment<cublasdx::alignment_of<BLAS>::c>(gV, d_frag, accumulator);
+#endif
     cute::for_each(cute::make_int_sequence<accum_size>{}, [&](auto i) {
       // x = (a @ bV) + biasV
       cv_frag(i) = cv_frag(i) + loadConv(d_frag(i));
     });
     // smem -> rmem, load g
     __syncthreads();
+#if defined(FLASHMOE_PLATFORM_HIP)
+    rocblasdx::copy_fragment<rocblasdx::alignment_of<BLAS>::c>(sGate, d_frag, accumulator);
+#else
     cublasdx::copy_fragment<cublasdx::alignment_of<BLAS>::c>(sGate, d_frag, accumulator);
+#endif
     cute::for_each(cute::make_int_sequence<accum_size>{}, [&](auto i) {
       // y = x * (act(a @ b))
       d_frag(i) = storeConv(cv_frag(i) * loadConv(d_frag(i)));
@@ -410,6 +417,17 @@ void gemmMainloop(cuda::std::byte* __restrict__ const& workspace,
       d_frag(i) = storeConv(act(c_frag(i) + loadConv(d_frag(i))));
     });
   }
+#if defined(FLASHMOE_PLATFORM_HIP)
+  auto gC = flashmoe::tile::getC<BM{}, BN{}, rocblasdx::arrangement_of_v_c<BLAS>>(c, M, N,
+      cute::select<0, 1>(tileCoord));
+  // rmem -> smem
+  auto sC = rocblasdx::make_tensor(reinterpret_cast<ElementC*>(workspace), BLAS::suggest_layout_smem_c());
+  __syncthreads();
+  rocblasdx::copy_fragment<rocblasdx::alignment_of<BLAS>::c>(d_frag, sC, accumulator);
+  __syncthreads();
+  // smem -> gmem
+  rocblasdx::copy<BLAS, rocblasdx::alignment_of<BLAS>::c>(sC, gC);
+#else
   auto gC = flashmoe::tile::getC<BM{}, BN{}, cublasdx::arrangement_of_v_c<BLAS>>(c, M, N,
       cute::select<0, 1>(tileCoord));
   // rmem -> smem
@@ -419,10 +437,15 @@ void gemmMainloop(cuda::std::byte* __restrict__ const& workspace,
   __syncthreads();
   // smem -> gmem
   cublasdx::copy<BLAS, cublasdx::alignment_of<BLAS>::c>(sC, gC);
+#endif
 }
 
 template<typename TileGEMM, typename Activation, flashmoe::MLPMatmulType mt, typename Element, typename ElementC>
+#if defined(FLASHMOE_PLATFORM_HIP)
+requires(rocblasdx::is_blas_execution_v<typename TileGEMM::BLAS>)
+#else
 requires(cublasdx::is_blas_execution_v<typename TileGEMM::BLAS>)
+#endif
 __launch_bounds__(TileGEMM::BLAS::max_threads_per_block, 1)
 __global__ void gk(const Element* __restrict__ a, const Element* __restrict__ b,
   const Element* __restrict__ bV, ElementC* __restrict__ c, const ElementC* __restrict__ bias,
@@ -431,8 +454,13 @@ __global__ void gk(const Element* __restrict__ a, const Element* __restrict__ b,
   const __grid_constant__ int M, const __grid_constant__ int N,
   const int __grid_constant__ K) {
   using BLAS = TileGEMM::BLAS;
+#if defined(FLASHMOE_PLATFORM_HIP)
+  constexpr int bM = rocblasdx::size_of<BLAS>::m;
+  constexpr int bN = rocblasdx::size_of<BLAS>::n;
+#else
   constexpr int bM = cublasdx::size_of<BLAS>::m;
   constexpr int bN = cublasdx::size_of<BLAS>::n;
+#endif
   const int nTiles = (M / bM) * (N / bN);
   extern __shared__ __align__(TileGEMM::GeneralAlignment::value) cuda::std::byte gemmWorkspace[];
   for (int tileIdx = blockIdx.x; tileIdx < nTiles; tileIdx += gridDim.x) {
@@ -510,7 +538,11 @@ constexpr int topK = $tk; // jit value
 constexpr auto mt = flashmoe::defineMLPType<$mt>();
 using Element = flashmoe::DataType<$dt>::Type; // jit value
 using AccumType = cuda::std::conditional_t<cuda::std::is_same_v<Element, double>, double, float>;
+#if defined(FLASHMOE_PLATFORM_HIP)
 using Activation = flashmoe::ActivationType<AccumType, flashmoe::defineAct<$act>()>::AT; // jit value
+#else
+using Activation = flashmoe::ActivationType<AccumType, flashmoe::defineAct<$act>()>::AT; // jit value
+#endif
 
 // tile shapes
 constexpr auto bM = flashmoe::heuristics::getMoETileM<S, Arch>();
@@ -540,20 +572,24 @@ int blocks0 = -1;
 int blocks1 = -1;
 
 static void reference_initialize(const int& devId) {
-  CHECK_CUDA(cudaSetDevice(devId));
+  CHECK_GPU(gpuSetDevice(devId));
   int num_sms = 0;
-  CHECK_CUDA(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, devId));
+  CHECK_GPU(gpuDeviceGetAttribute(&num_sms, gpuDevAttrMultiProcessorCount, devId));
   auto kernel0 = gk<TileGEMM0, Activation, mt, Element, Element>;
   // set shared memory
-  CHECK_CUDA(cudaFuncSetAttribute(kernel0, cudaFuncAttributeMaxDynamicSharedMemorySize, GEMM0Sz));
+  CHECK_GPU(gpuFuncSetAttribute(kernel0, gpuFuncAttributeMaxDynamicSharedMemorySize, GEMM0Sz));
   int bps = 0;
-  CHECK_CUDA(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel0, threads, GEMM0Sz));
+  CHECK_GPU(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel0, threads, GEMM0Sz));
   blocks0 = cute::min((roundEC / bM) * (I / bN0), bps * num_sms);
+#if defined(FLASHMOE_PLATFORM_HIP)
+  auto kernel1 = gk<TileGEMM1, rocblasdx::identity, flashmoe::MLPMatmulType::vanilla, Element, Element>;
+#else
   auto kernel1 = gk<TileGEMM1, cublasdx::identity, flashmoe::MLPMatmulType::vanilla, Element, Element>;
+#endif
   // set shared memory
-  CHECK_CUDA(cudaFuncSetAttribute(kernel1, cudaFuncAttributeMaxDynamicSharedMemorySize, GEMM1Sz));
+  CHECK_GPU(gpuFuncSetAttribute(kernel1, gpuFuncAttributeMaxDynamicSharedMemorySize, GEMM1Sz));
   // get blocks
-  CHECK_CUDA(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel1, threads, GEMM1Sz));
+  CHECK_GPU(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel1, threads, GEMM1Sz));
   blocks1 = cute::min((roundEC / bM) * (H / bN1), bps * num_sms);
 }
 
@@ -590,11 +626,11 @@ static void reference_forward(
   auto* __restrict__ ref_interim1 = reinterpret_cast<Element*>(ref_interim1_);
   const auto* __restrict__ expertCounts = reinterpret_cast<const int*>(expertCounts_);
   auto* __restrict__ ref_out = reinterpret_cast<Element*>(ref_out_);
-  auto stream = reinterpret_cast<cudaStream_t>(stream_ptr);
-  CHECK_CUDA(cudaMemsetAsync(ref_out, 0, sizeof(Element) * S * H, stream));
+  auto stream = reinterpret_cast<gpuStream_t>(stream_ptr);
+  CHECK_GPU(gpuMemsetAsync(ref_out, 0, sizeof(Element) * S * H, stream));
   std::vector<int> hCounts (E);
-  CHECK_CUDA(cudaMemcpyAsync(hCounts.data(), expertCounts, sizeof(int) * E, cudaMemcpyDeviceToHost, stream));
-  cudaStreamSynchronize(stream);
+  CHECK_GPU(gpuMemcpyAsync(hCounts.data(), expertCounts, sizeof(int) * E, gpuMemcpyDeviceToHost, stream));
+  gpuStreamSynchronize(stream);
   constexpr auto nonAlpha = static_cast<AccumType>(1.f);
   constexpr auto nonBeta = static_cast<AccumType>(1.f);
   Element* nonV = nullptr;
@@ -616,7 +652,11 @@ static void reference_forward(
       // do GEMM 1 + bias
       auto* __restrict__ expertD = expertDown + i * (static_cast<size_t>(H) * I);
       auto* __restrict__ biasD = biasDown + i * H;
+#if defined(FLASHMOE_PLATFORM_HIP)
+      gk<TileGEMM1, rocblasdx::identity, flashmoe::MLPMatmulType::vanilla><<<blocks1, threads, GEMM1Sz, stream>>>
+#else
       gk<TileGEMM1, cublasdx::identity, flashmoe::MLPMatmulType::vanilla><<<blocks1, threads, GEMM1Sz, stream>>>
+#endif
       (ref_interim0, expertD, nonV, ref_interim1, biasD, nonV,
         nonAlpha, nonBeta, roundEC, H, I);
       // do combine

@@ -22,8 +22,26 @@
 #define TOPO_BLOCK_SIZE 128
 #define NANO_TO_MILLI 1e6
 
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/atomic.h"
+#include "flashmoe/platform/intrinsics.h"
+#include "flashmoe/platform/math_compat.h"
+
+#if !defined(FLASHMOE_PLATFORM_HIP)
 #include <cuda/atomic>
 #include <nvshmem.h>
+#else
+// ROCm: Topology discovery via SHMEM bandwidth probing is not yet ported to
+// ROCSHMEM.  The kernel relies on NVSHMEM block/warp-cooperative put primitives
+// (nvshmemx_putmem_block, nvshmemx_putmem_warp, nvshmemx_putmem_signal_nbi_block)
+// and cuda::barrier<device>, which require non-trivial mapping on HIP.
+//
+// On the HIP path, bootstrap.cuh::detectTopo() returns Topology::MIXED, which
+// is a safe conservative default.  The discover() kernel below is therefore
+// compiled out on ROCm.  When ROCSHMEM equivalents are validated, remove this
+// guard and port the NVSHMEM calls via platform/shmem.h.
+#define FLASHMOE_TOPO_DISCOVER_DISABLED 1
+#endif
 namespace flashmoe
 {
     struct __align__(8) floatPair {
@@ -60,6 +78,8 @@ namespace flashmoe::topology{
         unsigned int signal;
         WorkerAttribute wA;
     };
+
+#if !defined(FLASHMOE_TOPO_DISCOVER_DISABLED)
     template<cuda::thread_scope scope = cuda::thread_scope_device, typename Notification, typename T>
     requires(sizeof(Notification) == sizeof(ull_t) && alignof(Notification) == alignof(ull_t))
     __device__ __forceinline__
@@ -78,7 +98,6 @@ namespace flashmoe::topology{
     auto* advancePtr(cuda::std::byte* __restrict__ const& buffer, const unsigned int& slot) {
         return buffer + slot * BETA_BUFFER;
     }
-
     // Only a single block executes the below
     __device__ __forceinline__
     void awaitResponses(uint64_t* __restrict__ const& flags, WorkerAttribute* __restrict__ const& workerAttributes,
@@ -313,5 +332,6 @@ namespace flashmoe::topology{
             }
         }
     }
+#endif // !defined(FLASHMOE_TOPO_DISCOVER_DISABLED)
 }
 #endif //TOPO_CUH

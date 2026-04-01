@@ -5,6 +5,11 @@
 #ifndef FLASHMOE_MOE_CUH
 #define FLASHMOE_MOE_CUH
 
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/runtime.h"
+#include "flashmoe/platform/math_compat.h"
+#include "flashmoe/platform/shmem.h"
+
 #include "infra/activation.cuh"
 
 #include "context.cuh"
@@ -165,6 +170,9 @@ namespace flashmoe::moe
   >
   __launch_bounds__(Config::Threads::value, 1)
   __global__  void forward(const __grid_constant__ KernelArgs kArgs, const __grid_constant__ Context ctx) {
+    // ROCSHMEM: initialize device-side resources for this work-group
+    flashmoe::shmem::device::wg_init();
+
     using DataType = Config::DType;
     extern __shared__ __align__(MAX_ALIGNMENT) cuda::std::byte flashWorkspace[];
     // unpack pointers
@@ -197,6 +205,8 @@ namespace flashmoe::moe
       os::start<topo, subscriberCount, threads, bM, Config::PSS::value, DataType>(flashWorkspace,
         kArgs.expertCounts, symHeap, ctx, kArgs.EC,kArgs.I / bN0, kArgs.H / bN1, dispatchBlocks,
         kArgs.E, kArgs.I, processors);
+      // ROCSHMEM: finalize before early return
+      flashmoe::shmem::device::wg_finalize();
       return;
     }
     const auto stateNumber = ctx.stateNumbers[blockIdx.x];
@@ -244,6 +254,8 @@ namespace flashmoe::moe
       // for the next epoch
       ctx.stateNumbers[blockIdx.x] = sbs::next(stateNumber);
     }
+    // ROCSHMEM: finalize device-side resources for this work-group
+    flashmoe::shmem::device::wg_finalize();
   }
 
   template <
@@ -254,7 +266,7 @@ namespace flashmoe::moe
   __host__ __forceinline__
   void forwardHost(const KernelArgs& kArgs, const Context& ctx, cudaStream_t stream) {
     if constexpr (Config::CM::value == CombineMode::plural) {
-      cudaMemsetAsync(kArgs.moeOut, 0, sizeof(typename Config::DType) * kArgs.S * static_cast<size_t>(kArgs.H), stream);
+      gpuMemsetAsync(kArgs.moeOut, 0, sizeof(typename Config::DType) * kArgs.S * static_cast<size_t>(kArgs.H), stream);
     }
     forward<Config, a, topo><<<ctx.blocks, Config::Threads::value, ctx.smemSize, stream>>>(kArgs, ctx);
   }

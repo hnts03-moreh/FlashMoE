@@ -5,6 +5,13 @@
 #ifndef FLASHMOE_BITSET_CUH
 #define FLASHMOE_BITSET_CUH
 
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/math_compat.h"
+
+#if !defined(FLASHMOE_PLATFORM_HIP)
+// On CUDA, cuda::std::min comes from the CCCL headers
+#endif
+
 namespace flashmoe {
   struct __align__(4) BitSet {
     uint storage = 0U;
@@ -39,6 +46,7 @@ namespace flashmoe {
   constexpr uint nSI(const unsigned int &numBits) {
     constexpr unsigned int integerBitWidth = 32U;
     constexpr auto width = integerBitWidth * T;
+    // Use platform-compatible min: on HIP, cuda::std::min maps to std::min via math_compat.h
     return (numBits / width) * T + cuda::std::min(numBits % width, T);
   }
 

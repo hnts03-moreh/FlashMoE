@@ -4,7 +4,16 @@
 
 #ifndef FLASHMOE_HEAP_CUH
 #define FLASHMOE_HEAP_CUH
-#include <cuda/std/cstddef>
+
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/math_compat.h"
+#if defined(FLASHMOE_PLATFORM_HIP)
+#  include <cstddef>
+// Provide cuda::std::byte on HIP
+namespace cuda { namespace std { using ::std::byte; } }
+#else
+#  include <cuda/std/cstddef>
+#endif
 namespace flashmoe {
   /// Number of communication stages
   constexpr int HEAP_STAGES = 2;

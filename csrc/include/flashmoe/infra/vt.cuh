@@ -8,7 +8,26 @@
 #ifndef FLASHMOE_VT_CUH
 #define FLASHMOE_VT_CUH
 
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/math_compat.h"
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+// cutlass::is_pow2 shim for HIP
+namespace cutlass {
+  template <int N>
+  struct is_pow2 {
+    static constexpr bool value = (N > 0) && ((N & (N - 1)) == 0);
+  };
+  // Also provide ispow2 as a function for bootstrap.cuh
+  __host__ __device__ __forceinline__
+  constexpr bool ispow2(size_t n) {
+    return (n > 0) && ((n & (n - 1)) == 0);
+  }
+}
+#endif
+
 #include "constants.cuh"
+
 namespace flashmoe {
     constexpr int MAX_ALIGNMENT = 16;
     template<typename T, int Alignment = MAX_ALIGNMENT>

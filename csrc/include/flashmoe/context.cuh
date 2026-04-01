@@ -5,12 +5,29 @@
 #ifndef FLASHMOE_CONTEXT_CUH
 #define FLASHMOE_CONTEXT_CUH
 
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/math_compat.h"
+
 #include "infra/bitset.cuh"
 #include "infra/packed.cuh"
 #include "infra/signal.cuh"
 #include "infra/structures.cuh"
 #include "infra/task.cuh"
 #include "infra/tq.cuh"
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+// HIP does not have cuda::fast_mod_div from CCCL; provide a minimal shim
+namespace cuda {
+  template <typename T>
+  struct fast_mod_div {
+    T divisor_;
+    __host__ __device__ explicit fast_mod_div(T d = 1) : divisor_(d) {}
+    __host__ __device__ friend T operator%(T a, const fast_mod_div& fmd) {
+      return a % fmd.divisor_;
+    }
+  };
+}
+#endif
 
 namespace flashmoe {
   struct Context {

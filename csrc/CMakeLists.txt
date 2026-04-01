@@ -20,12 +20,37 @@ if(DEFINED ENV{NERSC_HOST})
     set(CMAKE_C_COMPILER ${C_COMP_PATH})
 endif ()
 
-project(flashmoe CUDA CXX)
+# -------------------------------------------------------
+# Platform detection
+# -------------------------------------------------------
+set(FLASHMOE_PLATFORM "AUTO" CACHE STRING "GPU platform: CUDA, HIP, or AUTO")
+
+if(FLASHMOE_PLATFORM STREQUAL "AUTO")
+  find_program(_HIPCC_FOUND hipcc)
+  if(_HIPCC_FOUND AND (DEFINED ENV{ROCM_PATH} OR EXISTS "/opt/rocm"))
+    set(FLASHMOE_PLATFORM_DETECTED "HIP")
+  else()
+    set(FLASHMOE_PLATFORM_DETECTED "CUDA")
+  endif()
+elseif(FLASHMOE_PLATFORM STREQUAL "HIP" OR FLASHMOE_PLATFORM STREQUAL "CUDA")
+  set(FLASHMOE_PLATFORM_DETECTED "${FLASHMOE_PLATFORM}")
+else()
+  message(FATAL_ERROR "FLASHMOE_PLATFORM must be AUTO, CUDA, or HIP")
+endif()
+
+message(STATUS "FlashMoE csrc platform: ${FLASHMOE_PLATFORM_DETECTED}")
+
+if(FLASHMOE_PLATFORM_DETECTED STREQUAL "HIP")
+  project(flashmoe LANGUAGES CXX HIP)
+else()
+  project(flashmoe CUDA CXX)
+endif()
 
 # flags
 add_library(flashmoe_warnings INTERFACE)
 
-target_compile_options(flashmoe_warnings INTERFACE
+if(FLASHMOE_PLATFORM_DETECTED STREQUAL "CUDA")
+  target_compile_options(flashmoe_warnings INTERFACE
         $<$<COMPILE_LANGUAGE:CXX>:
         -Wall -Wextra
         -fno-strict-aliasing
@@ -48,81 +73,154 @@ target_compile_options(flashmoe_warnings INTERFACE
         -Xcudafe --display_error_number
         -Xcompiler=-Wno-sign-compare
         >
-)
+  )
+else()
+  target_compile_options(flashmoe_warnings INTERFACE
+        $<$<COMPILE_LANGUAGE:CXX>:
+        -Wall -Wextra
+        -fno-strict-aliasing
+        -Wno-unknown-pragmas
+        -Wnull-dereference
+        -Wnarrowing
+        -Wno-switch
+        -Wformat=2
+        -Wno-unused-but-set-parameter
+        -Wno-sign-compare
+        >
+
+        $<$<COMPILE_LANGUAGE:HIP>:
+        -Wall -Wextra
+        -fno-strict-aliasing
+        -Wno-unknown-pragmas
+        -Wnull-dereference
+        -Wnarrowing
+        -Wno-switch
+        -Wformat=2
+        -Wno-unused-but-set-parameter
+        -Wno-sign-compare
+        >
+  )
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(CUDA_HOST_COMPILER ${CMAKE_CXX_COMPILER})
-set(CMAKE_CUDA_ARCHITECTURES "native")
-set(CMAKE_CUDA_STANDARD 20)
-set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-set(CMAKE_CUDA_EXTENSIONS OFF)
-
-# Query number of SMs
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
-include(SM)
-
-include(CheckCompilerFlag)
-check_compiler_flag(CUDA -t4 NVCC_THREADS)
-
-find_package(CUDAToolkit REQUIRED)
-string(REGEX MATCH "^[0-9]+" ARCH "${CMAKE_CUDA_ARCHITECTURES_NATIVE}") # xx-real -> xx
-math(EXPR GPU_ARCH "${ARCH} * 10" OUTPUT_FORMAT DECIMAL)
-message(STATUS "GPU 0 Compute Capability: ${ARCH}")
-
-set(ARCH_TAG "${ARCH}")
-if(ARCH GREATER_EQUAL 90)
-    string(APPEND ARCH_TAG "a") # accelerated arch-specific instruction set
+if(FLASHMOE_PLATFORM_DETECTED STREQUAL "CUDA")
+  set(CUDA_HOST_COMPILER ${CMAKE_CXX_COMPILER})
+  set(CMAKE_CUDA_ARCHITECTURES "native")
+  set(CMAKE_CUDA_STANDARD 20)
+  set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+  set(CMAKE_CUDA_EXTENSIONS OFF)
+else()
+  # HIP standard settings
+  set(CMAKE_HIP_STANDARD 20)
+  set(CMAKE_HIP_STANDARD_REQUIRED ON)
+  set(CMAKE_HIP_EXTENSIONS OFF)
+  if(NOT DEFINED CMAKE_HIP_ARCHITECTURES OR CMAKE_HIP_ARCHITECTURES STREQUAL "")
+    set(CMAKE_HIP_ARCHITECTURES "gfx942" CACHE STRING "HIP GPU architectures")
+  endif()
 endif()
-set(ENV{CUTLASS_NVCC_ARCHS} "${ARCH_TAG}")
+
+# Query number of SMs (CUDA only)
+if(FLASHMOE_PLATFORM_DETECTED STREQUAL "CUDA")
+  list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+  include(SM)
+
+  include(CheckCompilerFlag)
+  check_compiler_flag(CUDA -t4 NVCC_THREADS)
+
+  find_package(CUDAToolkit REQUIRED)
+  string(REGEX MATCH "^[0-9]+" ARCH "${CMAKE_CUDA_ARCHITECTURES_NATIVE}") # xx-real -> xx
+  math(EXPR GPU_ARCH "${ARCH} * 10" OUTPUT_FORMAT DECIMAL)
+  message(STATUS "GPU 0 Compute Capability: ${ARCH}")
+
+  set(ARCH_TAG "${ARCH}")
+  if(ARCH GREATER_EQUAL 90)
+      string(APPEND ARCH_TAG "a") # accelerated arch-specific instruction set
+  endif()
+  set(ENV{CUTLASS_NVCC_ARCHS} "${ARCH_TAG}")
+else()
+  # HIP: set architecture info for MI300X
+  find_package(hip REQUIRED)
+  # GPU_ARCH is used for FLASHMOE_ARCH define — use a representative value
+  # gfx942 maps to CDNA3; we use 942 as the arch identifier
+  set(GPU_ARCH 942)
+  set(ARCH_TAG "gfx942")
+endif()
 
 set(ENV{CPM_SOURCE_CACHE} "./cmake/cache")
-set(CCCL_ENABLE_UNSTABLE ON)
+
+if(FLASHMOE_PLATFORM_DETECTED STREQUAL "CUDA")
+  set(CCCL_ENABLE_UNSTABLE ON)
+endif()
+
 include(cmake/CPM.cmake)
-# CCCL
-CPMAddPackage(
-        NAME CCCL
-        GITHUB_REPOSITORY nvidia/cccl
-        VERSION 3.1.3
-)
-#CUTLASS
-CPMAddPackage(
-        NAME CUTLASS
-        GITHUB_REPOSITORY nvidia/cutlass
-        GIT_TAG v4.4.1
-        DOWNLOAD_ONLY TRUE
-        OPTIONS
-        "CUTLASS_NVCC_ARCHS=${ARCH_TAG}"
-)
 
-CPMAddPackage(
-        NAME NVTX3
-        GITHUB_REPOSITORY NVIDIA/NVTX
-        GIT_TAG v3.1.1-c-cpp
-        GIT_SHALLOW TRUE
-)
+if(FLASHMOE_PLATFORM_DETECTED STREQUAL "CUDA")
+  # CCCL
+  CPMAddPackage(
+          NAME CCCL
+          GITHUB_REPOSITORY nvidia/cccl
+          VERSION 3.1.3
+  )
+  #CUTLASS
+  CPMAddPackage(
+          NAME CUTLASS
+          GITHUB_REPOSITORY nvidia/cutlass
+          GIT_TAG v4.4.1
+          DOWNLOAD_ONLY TRUE
+          OPTIONS
+          "CUTLASS_NVCC_ARCHS=${ARCH_TAG}"
+  )
 
-# MatX
-set(MATX_NVTX_FLAGS ON)
-CPMAddPackage(
-        NAME MATX
-        GITHUB_REPOSITORY NVIDIA/MatX
-        GIT_TAG v0.9.4
-)
+  CPMAddPackage(
+          NAME NVTX3
+          GITHUB_REPOSITORY NVIDIA/NVTX
+          GIT_TAG v3.1.1-c-cpp
+          GIT_SHALLOW TRUE
+  )
+
+  # MatX
+  set(MATX_NVTX_FLAGS ON)
+  CPMAddPackage(
+          NAME MATX
+          GITHUB_REPOSITORY NVIDIA/MatX
+          GIT_TAG v0.9.4
+  )
+endif()
+
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     message(FATAL_ERROR "Set -DCMAKE_BUILD_TYPE=Release (or Debug).")
 endif()
 
-## NVSHMEM
-set(ENV{NVSHMEM_BUILD_LTOIR_LIBRARY} ON)
-set(NVSHMEM_BUILD_LTOIR_LIBRARY ON)
-find_package(NVSHMEM REQUIRED)
-# cuBLASDx
-find_package(mathdx REQUIRED COMPONENTS cublasdx CONFIG)
-find_package(mathdx REQUIRED COMPONENTS curanddx CONFIG)
-include(CheckCompilerFlag)
+if(FLASHMOE_PLATFORM_DETECTED STREQUAL "CUDA")
+  ## NVSHMEM
+  set(ENV{NVSHMEM_BUILD_LTOIR_LIBRARY} ON)
+  set(NVSHMEM_BUILD_LTOIR_LIBRARY ON)
+  find_package(NVSHMEM REQUIRED)
+  # cuBLASDx
+  find_package(mathdx REQUIRED COMPONENTS cublasdx CONFIG)
+  find_package(mathdx REQUIRED COMPONENTS curanddx CONFIG)
+  include(CheckCompilerFlag)
+else()
+  # ROCm equivalents (optional — may not be installed yet)
+  find_package(rocshmem QUIET)
+  if(TARGET rocshmem::rocshmem)
+    message(STATUS "ROCSHMEM found")
+  else()
+    message(STATUS "ROCSHMEM not found — distributed tests will be skipped")
+  endif()
+
+  # rocTX for profiling
+  find_library(ROCTX_LIB roctx64 HINTS ENV ROCM_PATH PATH_SUFFIXES lib)
+endif()
+
+# -------------------------------------------------------
+# Helper functions — platform-specific target configuration
+# -------------------------------------------------------
+if(FLASHMOE_PLATFORM_DETECTED STREQUAL "CUDA")
+
 function(flash_target_test tgt)
     target_link_libraries(${tgt} PRIVATE CUDA::cudart CUDA::cuda_driver CUDA::nvtx3)
     target_link_libraries(${tgt} PRIVATE atomic)
@@ -146,6 +244,7 @@ function(flash_target_test tgt)
             $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CUDA>>:--expt-relaxed-constexpr;-Xptxas=-v>
     )
 endfunction()
+
 function(flash_target_common tgt)
     target_link_libraries(${tgt} PRIVATE CUDA::cudart CUDA::cuda_driver atomic)
     if(TARGET nvtx3-cpp)
@@ -180,6 +279,7 @@ function(flash_target_common tgt)
             FLASHMOE_NVTX=1
     )
 endfunction()
+
 function(flash_target_lto tgt)
     target_link_libraries(${tgt} PRIVATE CUDA::cudart CUDA::cuda_driver CUDA::nvml atomic)
     target_link_libraries(${tgt} PRIVATE flashmoe_warnings)
@@ -216,67 +316,260 @@ function(flash_target_lto tgt)
             FLASHMOE_NVTX=1
     )
 endfunction()
-add_executable(testFlashMoE
-        tests/flashmoe.cu
-)
-set_target_properties(testFlashMoE PROPERTIES
-        CUDA_SEPARABLE_COMPILATION ON
-        CUDA_RESOLVE_DEVICE_SYMBOLS ON
-)
-flash_target_lto(testFlashMoE)
 
-# WAR for build failure
-if (NOT DEFINED ENV{NVSHMEM_LIB_HOME})
-    message(FATAL_ERROR "NVSHMEM_LIB_HOME not defined")
-endif ()
-set_target_properties(nvshmem::nvshmem_host PROPERTIES
-        IMPORTED_LOCATION_RELEASE "$ENV{NVSHMEM_LIB_HOME}/libnvshmem_host.so"
-)
-target_link_libraries(testFlashMoE PRIVATE nvshmem::nvshmem_host nvshmem::nvshmem_device)
-find_package(MPI REQUIRED COMPONENTS CXX)
-target_link_libraries(testFlashMoE PRIVATE MPI::MPI_CXX)
+else()
+# -------------------------------------------------------
+# HIP helper functions
+# -------------------------------------------------------
 
-add_executable(testScheduler
-        tests/scheduler.cu
-)
-flash_target_test(testScheduler)
+function(flash_target_test tgt)
+    target_link_libraries(${tgt} PRIVATE hip::device atomic)
+    target_link_libraries(${tgt} PRIVATE flashmoe_warnings)
+    target_compile_options(${tgt} PRIVATE
+            $<$<COMPILE_LANGUAGE:HIP>:--offload-arch=${CMAKE_HIP_ARCHITECTURES}>
+    )
+    target_compile_options(${tgt} PRIVATE
+            $<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:CXX>>:-O0;-g>
+            $<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:HIP>>:-O0;-g;-ggdb>
+            $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:-O3>
+            $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:HIP>>:-O3>
+    )
+    target_compile_definitions(${tgt} PRIVATE
+            FLASHMOE_PLATFORM_HIP=1
+            FLASHMOE_USE_MATH_COMPAT=1
+            FLASHMOE_ARCH=${GPU_ARCH}
+    )
+endfunction()
 
-add_executable(testGEMM
-        tests/gemm.cu
-)
-flash_target_common(testGEMM)
+function(flash_target_common tgt)
+    target_link_libraries(${tgt} PRIVATE hip::device atomic)
+    target_link_libraries(${tgt} PRIVATE flashmoe_warnings)
+    if(ROCTX_LIB)
+        target_link_libraries(${tgt} PRIVATE ${ROCTX_LIB})
+    endif()
+    target_compile_options(${tgt} PRIVATE
+            $<$<COMPILE_LANGUAGE:HIP>:--offload-arch=${CMAKE_HIP_ARCHITECTURES}>
+    )
+    target_compile_options(${tgt} PRIVATE
+            $<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:CXX>>:-O0;-g>
+            $<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:HIP>>:-O0;-g;-ggdb>
+            $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:-O3>
+            $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:HIP>>:-O3>
+    )
+    target_compile_definitions(${tgt} PRIVATE
+            FLASHMOE_PLATFORM_HIP=1
+            FLASHMOE_USE_MATH_COMPAT=1
+            FLASHMOE_ARCH=${GPU_ARCH}
+            FLASHMOE_NVTX=1
+    )
+endfunction()
 
-set(PYBIND11_FINDPYTHON ON)
-CPMAddPackage(
-        NAME pybind11
-        GITHUB_REPOSITORY pybind/pybind11
-        VERSION 3.0.2
-        DOWNLOAD_ONLY TRUE
-)
-add_executable(playground
-        tests/playground.cu
-)
-flash_target_common(playground)
-find_package(Python3 COMPONENTS Development)
-target_include_directories(playground PRIVATE "${pybind11_SOURCE_DIR}/include" ${Python3_INCLUDE_DIRS})
-target_link_libraries(playground PRIVATE nvshmem::nvshmem_host nvshmem::nvshmem_device)
+function(flash_target_lto tgt)
+    target_link_libraries(${tgt} PRIVATE hip::device atomic)
+    target_link_libraries(${tgt} PRIVATE flashmoe_warnings)
+    if(ROCTX_LIB)
+        target_link_libraries(${tgt} PRIVATE ${ROCTX_LIB})
+    endif()
+    target_compile_options(${tgt} PRIVATE
+            $<$<COMPILE_LANGUAGE:HIP>:--offload-arch=${CMAKE_HIP_ARCHITECTURES}>
+            $<$<COMPILE_LANGUAGE:HIP>:-fgpu-rdc>
+    )
+    target_link_options(${tgt} PRIVATE -fgpu-rdc)
+    target_compile_options(${tgt} PRIVATE
+            $<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:CXX>>:-O0;-g>
+            $<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:HIP>>:-O0;-g;-ggdb>
+            $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:-O3>
+            $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:HIP>>:-O3>
+    )
+    target_compile_definitions(${tgt} PRIVATE
+            FLASHMOE_PLATFORM_HIP=1
+            FLASHMOE_USE_MATH_COMPAT=1
+            FLASHMOE_ARCH=${GPU_ARCH}
+            FLASHMOE_NVTX=1
+    )
+endfunction()
 
-add_executable(testGate
-        tests/gate.cu
-)
-flash_target_common(testGate)
+endif() # platform helper functions
 
-add_executable(testCombine
-        tests/combine.cu
-)
-flash_target_common(testCombine)
+# -------------------------------------------------------
+# Test executables
+# -------------------------------------------------------
+if(FLASHMOE_PLATFORM_DETECTED STREQUAL "CUDA")
+  # CUDA test targets (original)
+  add_executable(testFlashMoE tests/flashmoe.cu)
+  set_target_properties(testFlashMoE PROPERTIES
+          CUDA_SEPARABLE_COMPILATION ON
+          CUDA_RESOLVE_DEVICE_SYMBOLS ON
+  )
+  flash_target_lto(testFlashMoE)
 
-add_executable(gemmMNK
-        tests/gemmMNK.cu
-)
-flash_target_common(gemmMNK)
+  # WAR for build failure
+  if (NOT DEFINED ENV{NVSHMEM_LIB_HOME})
+      message(FATAL_ERROR "NVSHMEM_LIB_HOME not defined")
+  endif ()
+  set_target_properties(nvshmem::nvshmem_host PROPERTIES
+          IMPORTED_LOCATION_RELEASE "$ENV{NVSHMEM_LIB_HOME}/libnvshmem_host.so"
+  )
+  target_link_libraries(testFlashMoE PRIVATE nvshmem::nvshmem_host nvshmem::nvshmem_device)
+  find_package(MPI REQUIRED COMPONENTS CXX)
+  target_link_libraries(testFlashMoE PRIVATE MPI::MPI_CXX)
 
-add_executable(testGatedGEMM
-        tests/gatedGEMM.cu
-)
-flash_target_common(testGatedGEMM)
+  add_executable(testScheduler tests/scheduler.cu)
+  flash_target_test(testScheduler)
+
+  add_executable(testGEMM tests/gemm.cu)
+  flash_target_common(testGEMM)
+
+  set(PYBIND11_FINDPYTHON ON)
+  CPMAddPackage(
+          NAME pybind11
+          GITHUB_REPOSITORY pybind/pybind11
+          VERSION 3.0.2
+          DOWNLOAD_ONLY TRUE
+  )
+  add_executable(playground tests/playground.cu)
+  flash_target_common(playground)
+  find_package(Python3 COMPONENTS Development)
+  target_include_directories(playground PRIVATE "${pybind11_SOURCE_DIR}/include" ${Python3_INCLUDE_DIRS})
+  target_link_libraries(playground PRIVATE nvshmem::nvshmem_host nvshmem::nvshmem_device)
+
+  add_executable(testGate tests/gate.cu)
+  flash_target_common(testGate)
+
+  add_executable(testCombine tests/combine.cu)
+  flash_target_common(testCombine)
+
+  add_executable(gemmMNK tests/gemmMNK.cu)
+  flash_target_common(gemmMNK)
+
+  add_executable(testGatedGEMM tests/gatedGEMM.cu)
+  flash_target_common(testGatedGEMM)
+
+else()
+  # -------------------------------------------------------
+  # HIP test targets
+  # -------------------------------------------------------
+  # Detect number of Compute Units (CUs) for MI300X — equivalent to NUM_SMS on CUDA.
+  # MI300X has 304 CUs total (8 XCDs x 38 CUs/XCD). Use a sensible default.
+  if(NOT DEFINED NUM_CUS)
+    # Try to query via rocm-smi; fall back to 304 for MI300X
+    execute_process(
+      COMMAND bash -c "rocm-smi --showcomputeunit 2>/dev/null | grep -oP '\\d+' | head -1"
+      OUTPUT_VARIABLE _DETECTED_CUS
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+      RESULT_VARIABLE _ROCMSMI_RC
+    )
+    if(_ROCMSMI_RC EQUAL 0 AND _DETECTED_CUS)
+      set(NUM_CUS "${_DETECTED_CUS}")
+    else()
+      set(NUM_CUS 304) # MI300X default
+    endif()
+  endif()
+  message(STATUS "FlashMoE HIP build: NUM_CUS (NUM_SMS) = ${NUM_CUS}")
+
+  # rocBLASDx include path
+  set(ROCBLASDX_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../rocblasdx/include")
+
+  # Helper: configure a HIP test target with standard defines
+  function(flash_hip_test_target tgt)
+    flash_target_test(${tgt})
+    target_include_directories(${tgt} SYSTEM PRIVATE "${ROCBLASDX_INCLUDE_DIR}")
+    target_compile_definitions(${tgt} PRIVATE NUM_SMS=${NUM_CUS})
+  endfunction()
+
+  function(flash_hip_common_target tgt)
+    flash_target_common(${tgt})
+    target_include_directories(${tgt} SYSTEM PRIVATE "${ROCBLASDX_INCLUDE_DIR}")
+    target_compile_definitions(${tgt} PRIVATE NUM_SMS=${NUM_CUS})
+  endfunction()
+
+  function(flash_hip_lto_target tgt)
+    flash_target_lto(${tgt})
+    target_include_directories(${tgt} SYSTEM PRIVATE "${ROCBLASDX_INCLUDE_DIR}")
+    target_compile_definitions(${tgt} PRIVATE NUM_SMS=${NUM_CUS})
+  endfunction()
+
+  # hipRAND for test RNG
+  find_package(hiprand QUIET)
+  if(NOT TARGET hip::hiprand AND NOT hiprand_FOUND)
+    find_library(HIPRAND_LIB hiprand HINTS ENV ROCM_PATH PATH_SUFFIXES lib)
+  endif()
+
+  # hipcub for scheduler test
+  find_package(hipcub QUIET)
+
+  # --- Scheduler test (no BLAS dependency) ---
+  add_executable(testScheduler tests/scheduler.cu)
+  set_source_files_properties(tests/scheduler.cu PROPERTIES LANGUAGE HIP)
+  flash_hip_test_target(testScheduler)
+  if(TARGET hipcub::hipcub)
+    target_link_libraries(testScheduler PRIVATE hipcub::hipcub)
+  endif()
+
+  # --- GEMM tests ---
+  add_executable(testGEMM tests/gemm.cu)
+  set_source_files_properties(tests/gemm.cu PROPERTIES LANGUAGE HIP)
+  flash_hip_common_target(testGEMM)
+  if(TARGET hip::hiprand)
+    target_link_libraries(testGEMM PRIVATE hip::hiprand)
+  elseif(HIPRAND_LIB)
+    target_link_libraries(testGEMM PRIVATE ${HIPRAND_LIB})
+  endif()
+
+  add_executable(gemmMNK tests/gemmMNK.cu)
+  set_source_files_properties(tests/gemmMNK.cu PROPERTIES LANGUAGE HIP)
+  flash_hip_common_target(gemmMNK)
+  if(TARGET hip::hiprand)
+    target_link_libraries(gemmMNK PRIVATE hip::hiprand)
+  elseif(HIPRAND_LIB)
+    target_link_libraries(gemmMNK PRIVATE ${HIPRAND_LIB})
+  endif()
+
+  add_executable(testGatedGEMM tests/gatedGEMM.cu)
+  set_source_files_properties(tests/gatedGEMM.cu PROPERTIES LANGUAGE HIP)
+  flash_hip_common_target(testGatedGEMM)
+  if(TARGET hip::hiprand)
+    target_link_libraries(testGatedGEMM PRIVATE hip::hiprand)
+  elseif(HIPRAND_LIB)
+    target_link_libraries(testGatedGEMM PRIVATE ${HIPRAND_LIB})
+  endif()
+
+  # --- Gate test ---
+  add_executable(testGate tests/gate.cu)
+  set_source_files_properties(tests/gate.cu PROPERTIES LANGUAGE HIP)
+  flash_hip_common_target(testGate)
+  if(TARGET hip::hiprand)
+    target_link_libraries(testGate PRIVATE hip::hiprand)
+  elseif(HIPRAND_LIB)
+    target_link_libraries(testGate PRIVATE ${HIPRAND_LIB})
+  endif()
+
+  # --- Combine test ---
+  add_executable(testCombine tests/combine.cu)
+  set_source_files_properties(tests/combine.cu PROPERTIES LANGUAGE HIP)
+  flash_hip_common_target(testCombine)
+  if(TARGET hip::hiprand)
+    target_link_libraries(testCombine PRIVATE hip::hiprand)
+  elseif(HIPRAND_LIB)
+    target_link_libraries(testCombine PRIVATE ${HIPRAND_LIB})
+  endif()
+
+  # --- FlashMoE E2E test (requires ROCSHMEM + MPI) ---
+  add_executable(testFlashMoE tests/flashmoe.cu)
+  set_source_files_properties(tests/flashmoe.cu PROPERTIES LANGUAGE HIP)
+  flash_hip_lto_target(testFlashMoE)
+  if(TARGET rocshmem::rocshmem)
+    target_link_libraries(testFlashMoE PRIVATE rocshmem::rocshmem)
+    find_package(MPI QUIET COMPONENTS CXX)
+    if(TARGET MPI::MPI_CXX)
+      target_link_libraries(testFlashMoE PRIVATE MPI::MPI_CXX)
+    endif()
+  endif()
+
+  # --- Playground (minimal, no GPU deps) ---
+  add_executable(playground tests/playground.cu)
+  set_source_files_properties(tests/playground.cu PROPERTIES LANGUAGE HIP)
+  flash_hip_common_target(playground)
+
+endif()

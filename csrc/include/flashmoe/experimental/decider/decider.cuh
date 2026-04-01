@@ -15,7 +15,13 @@
 #include <ranges>
 #include <set>
 #include <boost/pending/disjoint_sets.hpp>
+
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/math_compat.h"
+
+#if !defined(FLASHMOE_PLATFORM_HIP)
 #include <cute/tensor.hpp>
+#endif
 
 #include "comps/edge.cuh"
 #include "comps/niche.cuh"

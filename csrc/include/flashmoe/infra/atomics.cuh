@@ -12,8 +12,18 @@
 
 #ifndef FLASHMOE_ATOMICS_CUH
 #define FLASHMOE_ATOMICS_CUH
+
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/atomic.h"
+#include "flashmoe/platform/math_compat.h"
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+#include <hip/hip_runtime.h>
+// HIP does not have <cuda/barrier>; barrier functionality handled separately
+#else
 #include <cuda/atomic>
 #include <cuda/barrier>
+#endif
 
 namespace flashmoe {
   using ull_t = unsigned long long int;
@@ -52,8 +62,8 @@ namespace flashmoe {
     initialized = 1
   };
 
-  // Set every byte to 0xFF → each int becomes 0xFFFFFFFF → -1
-  // needed for cudaMemSet
+  // Set every byte to 0xFF -> each int becomes 0xFFFFFFFF -> -1
+  // needed for cudaMemSet / hipMemset
   constexpr auto STALE_AS_BYTE = 0xFF;
   static_assert(cuda::std::is_same_v<cuda::std::underlying_type_t<InitState>, int>);
   static_assert(initialized == 1 && stale != initializing && initialized != initializing);

@@ -14,13 +14,13 @@ authors = [
   { name = "Osayamen Jonathan Aimuyo", email = "osayamen@stanford.edu" },
 ]
 
-dependencies = [
-    "cuda-core>=0.5.0"
-]
+dependencies = []
 
 [project.optional-dependencies]
-cu12 = ["nvshmem4py-cu12"]
-cu13 = ["nvshmem4py-cu13"]
+cuda = ["cuda-core>=0.5.0"]
+cu12 = ["cuda-core>=0.5.0", "nvshmem4py-cu12"]
+cu13 = ["cuda-core>=0.5.0", "nvshmem4py-cu13"]
+rocm = ["hip-python>=6.0.0"]
 
 [project.urls]
 Homepage = "https://github.com/osayamenja/FlashMoE"

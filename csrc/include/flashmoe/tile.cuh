@@ -7,8 +7,25 @@
 
 #ifndef FLASHMOE_TILE_CUH
 #define FLASHMOE_TILE_CUH
+
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/device.h"
+#include "flashmoe/platform/math_compat.h"
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+#include <rocblasdx/rocblasdx.hpp>
+// On HIP, cutlass::NumericConverter is provided by math_compat.h
+#else
 #include <cublasdx.hpp>
 #include <cutlass/numeric_conversion.h>
+#endif
+
+// Namespace alias so that code below can use a single namespace for the BLAS descriptor API
+#if defined(FLASHMOE_PLATFORM_HIP)
+namespace flashmoe_blas = rocblasdx;
+#else
+namespace flashmoe_blas = cublasdx;
+#endif
 
 namespace flashmoe::heuristics {
   template<int M, int Arch>
@@ -201,15 +218,18 @@ namespace flashmoe
   };
 
   template <>
-  struct Converter<cublasdx::tfloat32_t, float> {
+  struct Converter<flashmoe_blas::tfloat32_t, float> {
     __device__ auto operator()(const float& x) const {
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
+#if defined(FLASHMOE_PLATFORM_HIP)
+      // MI300X has no native TF32; tfloat32_t is a float wrapper in rocBLASDx
+      return flashmoe_blas::tfloat32_t{x};
+#elif defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
       uint32_t storage = cuda::std::bit_cast<uint32_t>(x);
       asm("cvt.rna.tf32.f32 %0, %1;" : "=r"(storage) : "r"(storage));
-      return cuda::std::bit_cast<cublasdx::tfloat32_t>(storage);
+      return cuda::std::bit_cast<flashmoe_blas::tfloat32_t>(storage);
 #else
       constexpr cutlass::NumericConverter<cutlass::tfloat32_t, float> c{};
-      return cuda::std::bit_cast<cublasdx::tfloat32_t>(c(x));
+      return cuda::std::bit_cast<flashmoe_blas::tfloat32_t>(c(x));
 #endif
     }
   };
@@ -219,6 +239,7 @@ namespace flashmoe
   struct isTensor : cuda::std::false_type {
   };
 
+#if !defined(FLASHMOE_PLATFORM_HIP)
   template <class Engine, class Layout>
   struct isTensor<cute::Tensor<Engine, Layout>> : cuda::std::true_type {
   };
@@ -226,6 +247,7 @@ namespace flashmoe
   template <class Engine, class Layout>
   struct isTensor<const cute::Tensor<Engine, Layout>> : cuda::std::true_type {
   };
+#endif
 }
 
 namespace flashmoe::tile
@@ -235,37 +257,56 @@ namespace flashmoe::tile
   template <int N>
   __device__ __forceinline__
   void cpWait() {
+#if defined(FLASHMOE_PLATFORM_HIP)
+    // ROCm: no cp.async; synchronous loads used instead. Just barrier.
+    __syncthreads();
+#else
     cute::cp_async_wait<N>();
     __syncthreads();
+#endif
   }
 
   __device__ __forceinline__
   void cpFence() {
+#if defined(FLASHMOE_PLATFORM_HIP)
+    // ROCm: no cp.async fence needed; synchronous loads.
+    // No-op -- the __syncthreads() in cpWait provides ordering.
+#else
     cute::cp_async_fence();
+#endif
   }
 
   __device__ __forceinline__
   constexpr auto idx2Coord(const int& tilesM, const int& tilesN, const int& tileIdx) {
+#if defined(FLASHMOE_PLATFORM_HIP)
+    // Replicate cute::idx2crd for a 2-D shape with stride = (tilesN, 1)
+    const auto row = tileIdx / tilesN;
+    const auto col = tileIdx % tilesN;
+    return cute::make_coord(row, col, cute::Int<0>{});
+#else
     const auto tileCoord = cute::idx2crd(tileIdx, cute::make_shape(tilesM, tilesN),
                                          cute::make_stride(tilesN, cute::_1{}));
     return cute::make_coord(cute::get<0>(tileCoord), cute::get<1>(tileCoord), cute::_);
+#endif
   }
 
-  template <int tRow, int tCol, cublasdx::arrangement ar, typename Element, typename TileCoord>
+#if !defined(FLASHMOE_PLATFORM_HIP)
+  // These tile accessors use deep CuTe tensor operations only available on CUDA
+  template <int tRow, int tCol, flashmoe_blas::arrangement ar, typename Element, typename TileCoord>
   __device__ __forceinline__
   constexpr auto get(const Element* __restrict__ const& p, const int& nRow, const int& nCol,
                      const TileCoord& tileCoord) {
-    const auto stride = cute::conditional_return<ar == cublasdx::row_major>
+    const auto stride = cute::conditional_return<ar == flashmoe_blas::row_major>
       (cute::make_stride(nCol, cute::_1{}), cute::make_stride(cute::_1{}, nRow));
     const auto m = cute::make_tensor(cute::make_gmem_ptr(p),
                                      cute::make_layout(cute::make_shape(nRow, nCol), stride));
     return cute::local_tile(m, cute::Shape<cute::Int<tRow>, cute::Int<tCol>>{}, tileCoord);
   }
 
-  template <int tRow, int tCol, cublasdx::arrangement ar, typename Element, typename TileCoord>
+  template <int tRow, int tCol, flashmoe_blas::arrangement ar, typename Element, typename TileCoord>
   __device__ __forceinline__
   constexpr auto getC(Element* __restrict__ const& p, const int& nRow, const int& nCol, const TileCoord& tileCoord) {
-    const auto stride = cute::conditional_return<ar == cublasdx::row_major>
+    const auto stride = cute::conditional_return<ar == flashmoe_blas::row_major>
       (cute::make_stride(nCol, cute::_1{}), cute::make_stride(cute::_1{}, nRow));
     auto m = cute::make_tensor(cute::make_gmem_ptr(p),
                                cute::make_layout(cute::make_shape(nRow, nCol), stride));
@@ -293,38 +334,39 @@ namespace flashmoe::tile
   void update_buffer(Tensor& tensor, Element* __restrict__ const& base_ptr) {
     tensor.data() = base_ptr + (stage * offset);
   }
+#endif // !FLASHMOE_PLATFORM_HIP
 
-  template <cublasdx::arrangement ar, int bM, int bK>
-  constexpr int ldA = ar == cublasdx::row_major ? bK : bM;
-  template <cublasdx::arrangement br, int bK, int bN>
-  constexpr int ldB = br == cublasdx::col_major ? bK : bN;
-  template <cublasdx::arrangement cr, int bM, int bN>
-  constexpr int ldC = cr == cublasdx::row_major ? bN : bM;
+  template <flashmoe_blas::arrangement ar, int bM, int bK>
+  constexpr int ldA = ar == flashmoe_blas::row_major ? bK : bM;
+  template <flashmoe_blas::arrangement br, int bK, int bN>
+  constexpr int ldB = br == flashmoe_blas::col_major ? bK : bN;
+  template <flashmoe_blas::arrangement cr, int bM, int bN>
+  constexpr int ldC = cr == flashmoe_blas::row_major ? bN : bM;
 
   template <
     int bM, int bN, int bK, // tile shape
     int Arch, // compute capability
     typename Element, // type for A and B
     typename MMA_C, // compute type
-    cublasdx::arrangement ar = cublasdx::row_major,
-    cublasdx::arrangement br = cublasdx::col_major,
-    cublasdx::arrangement cr = cublasdx::row_major,
+    flashmoe_blas::arrangement ar = flashmoe_blas::row_major,
+    flashmoe_blas::arrangement br = flashmoe_blas::col_major,
+    flashmoe_blas::arrangement cr = flashmoe_blas::row_major,
     int aAlignment = MAX_ALIGN,
     int bAlignment = MAX_ALIGN,
     int cAlignment = MAX_ALIGN
   >
   constexpr int suggest_thread_count() {
     using GhostBLAS = decltype(
-      cublasdx::Size<bM, bN, bK>() +
-      cublasdx::Precision<Element, Element, MMA_C>() +
-      cublasdx::Type<cublasdx::type::real>() +
-      cublasdx::Function<cublasdx::function::MM>() +
-      cublasdx::Arrangement<ar, br, cr>() +
-      cublasdx::Block() +
-      cublasdx::Alignment<aAlignment, bAlignment, cAlignment>() +
-      cublasdx::StaticBlockDim() +
-      cublasdx::EnableInputStreaming() +
-      cublasdx::SM<Arch, Arch >= 900 ? cublasdx::sm_modifier::arch_specific : cublasdx::sm_modifier::generic>());
+      flashmoe_blas::Size<bM, bN, bK>() +
+      flashmoe_blas::Precision<Element, Element, MMA_C>() +
+      flashmoe_blas::Type<flashmoe_blas::type::real>() +
+      flashmoe_blas::Function<flashmoe_blas::function::MM>() +
+      flashmoe_blas::Arrangement<ar, br, cr>() +
+      flashmoe_blas::Block() +
+      flashmoe_blas::Alignment<aAlignment, bAlignment, cAlignment>() +
+      flashmoe_blas::StaticBlockDim() +
+      flashmoe_blas::EnableInputStreaming() +
+      flashmoe_blas::SM<Arch, Arch >= 900 ? flashmoe_blas::sm_modifier::arch_specific : flashmoe_blas::sm_modifier::generic>());
     return GhostBLAS::max_threads_per_block;
   }
 
@@ -341,9 +383,9 @@ namespace flashmoe::tile
     int threads,
     int pipeStages = 1, // pipeline stages
     TF32Compute tfc = TF32Compute::yes,
-    cublasdx::arrangement ar = cublasdx::row_major,
-    cublasdx::arrangement br = cublasdx::col_major,
-    cublasdx::arrangement cr = cublasdx::row_major,
+    flashmoe_blas::arrangement ar = flashmoe_blas::row_major,
+    flashmoe_blas::arrangement br = flashmoe_blas::col_major,
+    flashmoe_blas::arrangement cr = flashmoe_blas::row_major,
     int aAlignment = MAX_ALIGN,
     int bAlignment = MAX_ALIGN,
     int cAlignment = MAX_ALIGN
@@ -351,31 +393,31 @@ namespace flashmoe::tile
     requires(pipeStages > 0 && Arch >= 700)
   struct CollectiveMainloop {
     using TranslatedElement = cuda::std::conditional_t<
-      tfc == TF32Compute::yes && cuda::std::is_same_v<Element, float>, cublasdx::tfloat32_t, Element>;
+      tfc == TF32Compute::yes && cuda::std::is_same_v<Element, float>, flashmoe_blas::tfloat32_t, Element>;
     using BLAS = cuda::std::conditional_t<cuda::std::is_same_v<TranslatedElement, Element>,
       decltype(
-        cublasdx::Size<bM, bN, bK>() +
-        cublasdx::Precision<Element, Element, MMA_C>() +
-        cublasdx::Type<cublasdx::type::real>() +
-        cublasdx::Function<cublasdx::function::MM>() +
-        cublasdx::Arrangement<ar, br, cr>() +
-        cublasdx::Block() +
-        cublasdx::Alignment<aAlignment, bAlignment, cAlignment>() +
-        cublasdx::BlockDim<threads>() +
-        cublasdx::StaticBlockDim() +
-        cublasdx::EnableInputStreaming() +
-        cublasdx::SM<Arch, Arch >= 900 ? cublasdx::sm_modifier::arch_specific : cublasdx::sm_modifier::generic>()),
+        flashmoe_blas::Size<bM, bN, bK>() +
+        flashmoe_blas::Precision<Element, Element, MMA_C>() +
+        flashmoe_blas::Type<flashmoe_blas::type::real>() +
+        flashmoe_blas::Function<flashmoe_blas::function::MM>() +
+        flashmoe_blas::Arrangement<ar, br, cr>() +
+        flashmoe_blas::Block() +
+        flashmoe_blas::Alignment<aAlignment, bAlignment, cAlignment>() +
+        flashmoe_blas::BlockDim<threads>() +
+        flashmoe_blas::StaticBlockDim() +
+        flashmoe_blas::EnableInputStreaming() +
+        flashmoe_blas::SM<Arch, Arch >= 900 ? flashmoe_blas::sm_modifier::arch_specific : flashmoe_blas::sm_modifier::generic>()),
       decltype(
-        cublasdx::Size<bM, bN, bK>() +
-        cublasdx::Precision<TranslatedElement, TranslatedElement, MMA_C>() +
-        cublasdx::Type<cublasdx::type::real>() +
-        cublasdx::Function<cublasdx::function::MM>() +
-        cublasdx::Arrangement<ar, br, cr>() +
-        cublasdx::Block() +
-        cublasdx::Alignment<aAlignment, bAlignment, cAlignment>() +
-        cublasdx::BlockDim<threads>() +
-        cublasdx::StaticBlockDim() +
-        cublasdx::SM<Arch, Arch >= 900 ? cublasdx::sm_modifier::arch_specific : cublasdx::sm_modifier::generic>())>;
+        flashmoe_blas::Size<bM, bN, bK>() +
+        flashmoe_blas::Precision<TranslatedElement, TranslatedElement, MMA_C>() +
+        flashmoe_blas::Type<flashmoe_blas::type::real>() +
+        flashmoe_blas::Function<flashmoe_blas::function::MM>() +
+        flashmoe_blas::Arrangement<ar, br, cr>() +
+        flashmoe_blas::Block() +
+        flashmoe_blas::Alignment<aAlignment, bAlignment, cAlignment>() +
+        flashmoe_blas::BlockDim<threads>() +
+        flashmoe_blas::StaticBlockDim() +
+        flashmoe_blas::SM<Arch, Arch >= 900 ? flashmoe_blas::sm_modifier::arch_specific : flashmoe_blas::sm_modifier::generic>())>;
     using TileArch = cute::Int<Arch>;
     using Threads = cute::Int<threads>;
     using TileShape = cute::Shape<cute::Int<bM>, cute::Int<bN>, cute::Int<bK>>;
@@ -390,7 +432,9 @@ namespace flashmoe::tile
     using PipeStages = cute::Int<pipeStages>;
 
     template <typename Accumulator, typename TileCoord>
-      requires(cute::rank_v<TileCoord> == 3 && cublasdx::is_blas_execution_v<BLAS>)
+#if !defined(FLASHMOE_PLATFORM_HIP)
+      requires(cute::rank_v<TileCoord> == 3 && flashmoe_blas::is_blas_execution_v<BLAS>)
+#endif
     __device__ __forceinline__
     void operator()(void* __restrict__ const& workspace,
                     const Element* __restrict__ const& a,
@@ -398,25 +442,50 @@ namespace flashmoe::tile
                     Accumulator& accumulator,
                     const int& M, const int& N, const int& K, const TileCoord& tileCoord) const {
       using TransformType = cuda::std::conditional_t<cuda::std::is_same_v<TranslatedElement, Element>,
-                                                     cublasdx::identity, Converter<TranslatedElement, Element>>;
+                                                     flashmoe_blas::identity, Converter<TranslatedElement, Element>>;
       constexpr TransformType transformOp{};
       // assert(__isShared(workspace));
       accumulator.clear();
       const int tilesK = K / bK;
-      const auto gA = tile::get<bM, bK, ar>(a, M, K, cute::select<0, 2>(tileCoord)); //  M, K
-      const auto gB = tile::get<bK, bN, br>(b, K, N, cute::select<2, 1>(tileCoord)); // K, N
-      constexpr auto sASS = cublasdx::cosize(BLAS::suggest_layout_smem_a());
-      constexpr auto sBSS = cublasdx::cosize(BLAS::suggest_layout_smem_b());
+#if defined(FLASHMOE_PLATFORM_HIP)
+      // ROCm path: use rocBLASDx API (same interface as cuBLASDx via the compatibility layer)
+      constexpr auto sASS = flashmoe_blas::cosize(BLAS::suggest_layout_smem_a());
+      constexpr auto sBSS = flashmoe_blas::cosize(BLAS::suggest_layout_smem_b());
       auto* __restrict__ sAP = static_cast<Element*>(workspace);
       auto* __restrict__ sBP = sAP + (sASS * pipeStages);
-      auto sA = cublasdx::make_tensor(sAP, BLAS::suggest_layout_smem_a());
-      auto sB = cublasdx::make_tensor(sBP, BLAS::suggest_layout_smem_b());
+      auto sA = flashmoe_blas::make_tensor(sAP, BLAS::suggest_layout_smem_a());
+      auto sB = flashmoe_blas::make_tensor(sBP, BLAS::suggest_layout_smem_b());
+      // ROCm: no async copy pipeline; synchronous loads
+      // Simple mainloop without pipelining
+      for (int kStage = 0; kStage < tilesK; ++kStage) {
+        // Copy A and B tiles to shared memory
+        // Direct element-wise copy (synchronous)
+        flashmoe_blas::copy<BLAS, aAlignment>(
+          flashmoe_blas::make_tensor(a + (cute::get<0>(tileCoord) * bM * K + kStage * bK),
+            BLAS::suggest_layout_smem_a()), sA);
+        flashmoe_blas::copy<BLAS, bAlignment>(
+          flashmoe_blas::make_tensor(b + (kStage * bK * N + cute::get<1>(tileCoord) * bN),
+            BLAS::suggest_layout_smem_b()), sB);
+        __syncthreads();
+        BLAS().execute(sA, sB, accumulator, transformOp, transformOp);
+        __syncthreads();
+      }
+#else
+      // CUDA path: original CuTe-based implementation with cp.async pipelining
+      const auto gA = tile::get<bM, bK, ar>(a, M, K, cute::select<0, 2>(tileCoord)); //  M, K
+      const auto gB = tile::get<bK, bN, br>(b, K, N, cute::select<2, 1>(tileCoord)); // K, N
+      constexpr auto sASS = flashmoe_blas::cosize(BLAS::suggest_layout_smem_a());
+      constexpr auto sBSS = flashmoe_blas::cosize(BLAS::suggest_layout_smem_b());
+      auto* __restrict__ sAP = static_cast<Element*>(workspace);
+      auto* __restrict__ sBP = sAP + (sASS * pipeStages);
+      auto sA = flashmoe_blas::make_tensor(sAP, BLAS::suggest_layout_smem_a());
+      auto sB = flashmoe_blas::make_tensor(sBP, BLAS::suggest_layout_smem_b());
       // prime pipeline
       cute::for_each(cute::make_int_sequence<pipeStages>{}, [&](auto stage) {
         update_buffer<stage, sASS>(sA, sAP);
         update_buffer<stage, sBSS>(sB, sBP);
-        cublasdx::copy<BLAS, aAlignment>(gA(cute::_, cute::_, stage), sA);
-        cublasdx::copy<BLAS, bAlignment>(gB(cute::_, cute::_, stage), sB);
+        flashmoe_blas::copy<BLAS, aAlignment>(gA(cute::_, cute::_, stage), sA);
+        flashmoe_blas::copy<BLAS, bAlignment>(gB(cute::_, cute::_, stage), sB);
         cpFence();
       });
       // mainloop
@@ -427,8 +496,8 @@ namespace flashmoe::tile
         cpWait<pipeStages - 1>();
         BLAS().execute(sA, sB, accumulator, transformOp, transformOp);
         __syncthreads();
-        cublasdx::copy<BLAS, aAlignment>(gA(cute::_, cute::_, kStage), sA);
-        cublasdx::copy<BLAS, bAlignment>(gB(cute::_, cute::_, kStage), sB);
+        flashmoe_blas::copy<BLAS, aAlignment>(gA(cute::_, cute::_, kStage), sA);
+        flashmoe_blas::copy<BLAS, bAlignment>(gB(cute::_, cute::_, kStage), sB);
         cpFence();
       }
       // tail
@@ -439,6 +508,7 @@ namespace flashmoe::tile
         cpWait<(pipeStages - 1) - stage>();
         BLAS().execute(sA, sB, accumulator, transformOp, transformOp);
       });
+#endif
     }
   };
 }

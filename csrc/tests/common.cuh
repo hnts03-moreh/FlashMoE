@@ -11,10 +11,22 @@
 #include <tuple>
 #include <random>
 
+#include "../include/flashmoe/platform/runtime.h"
+#include "../include/flashmoe/platform/device.h"
+#include "../include/flashmoe/platform/math_compat.h"
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+#include <rocblasdx/rocblasdx.hpp>
+#include <hip/hip_runtime.h>
+// hipRAND-based RNG replacement for cuRANDDx
+#include <hiprand/hiprand.h>
+#include <hiprand/hiprand_kernel.h>
+#else
 #include <cuda_runtime.h>
 #include <cublasdx.hpp>
 #include <curanddx.hpp>
 #include <matx.h>
+#endif
 
 #include "../include/flashmoe/infra/packed.cuh"
 
@@ -39,6 +51,8 @@ struct Converter<__nv_bfloat16, float> {
   }
 };
 
+#if !defined(FLASHMOE_PLATFORM_HIP)
+// MatX type converters — only needed on CUDA where MatX is available
 template <>
 struct Converter<matx::matxFp16, float> {
   __device__ auto operator()(const float& x) const {
@@ -66,6 +80,7 @@ struct Converter<float, matx::matxBf16> {
     return __bfloat162float(x.x);
   }
 };
+#endif // !FLASHMOE_PLATFORM_HIP
 
 // Deterministic 64-bit mix hash (fast, good enough for tie-breaking)
 __device__ __forceinline__ uint64_t mix64(uint64_t x) {
@@ -97,6 +112,73 @@ struct VectorTypeDescriptor {
   using VectorWidth = cute::C<Alignment / sizeof(T)>;
   using VectorType = cutlass::AlignedArray<T, VectorWidth::value, Alignment>;
 };
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+// HIP: Use hipRAND Philox-based random number generation (replaces cuRANDDx)
+template <int Arch, bool predicate, bool addJitter = false, typename Element>
+__global__ void generateRandUniform(
+  Element* __restrict__ out,
+  const size_t n,
+  const long int seed,
+  const float minv,
+  const float maxv,
+  const unsigned long long global_offset = 0ULL
+) {
+  const auto tid = static_cast<unsigned long long int>(blockIdx.x)
+    * blockDim.x + threadIdx.x;
+
+  constexpr int vF = 4;
+  const size_t out_base = static_cast<size_t>(tid) * vF;
+
+  // Initialize Philox4x32 state
+  hiprandStatePhilox4_32_10_t state;
+  hiprand_init(seed, tid, global_offset, &state);
+
+  // Generate 4 uniform floats
+  float4 v_raw;
+  v_raw.x = hiprand_uniform(&state) * (maxv - minv) + minv;
+  v_raw.y = hiprand_uniform(&state) * (maxv - minv) + minv;
+  v_raw.z = hiprand_uniform(&state) * (maxv - minv) + minv;
+  v_raw.w = hiprand_uniform(&state) * (maxv - minv) + minv;
+
+  auto v_mixed = v_raw;
+  if constexpr (addJitter) {
+    constexpr auto eps = 1e-7f;
+    constexpr auto jitter_seed = 0xCAFEBABEDEADBEEFULL;
+    v_mixed = float4{
+      v_raw.x + tie_jitter64(out_base, eps, jitter_seed),
+      v_raw.y + tie_jitter64(out_base + 1, eps, jitter_seed),
+      v_raw.z + tie_jitter64(out_base + 2, eps, jitter_seed),
+      v_raw.w + tie_jitter64(out_base + 3, eps, jitter_seed)
+    };
+  }
+  const auto v = v_mixed;
+
+  constexpr Converter<Element, float> storeOp{};
+
+  if constexpr (predicate) {
+    if (out_base + (vF - 1) >= n) return;
+    using VTD = VectorTypeDescriptor<Element, vF * sizeof(Element)>;
+    using VT = VTD::VectorType;
+    static_assert(VTD::VectorWidth::value == vF);
+    auto* __restrict__ vo = reinterpret_cast<VT*>(out);
+    VT vt{};
+    vt[0] = storeOp(v.x);
+    vt[1] = storeOp(v.y);
+    vt[2] = storeOp(v.z);
+    vt[3] = storeOp(v.w);
+    vo[tid] = vt;
+  }
+  else {
+    if (out_base >= n) return;
+    out[out_base + 0] = storeOp(v.x);
+    if (out_base + 1 < n) out[out_base + 1] = storeOp(v.y);
+    if (out_base + 2 < n) out[out_base + 2] = storeOp(v.z);
+    if (out_base + 3 < n) out[out_base + 3] = storeOp(v.w);
+  }
+}
+
+#else // CUDA: original cuRANDDx implementation
 
 template <int Arch, bool predicate, bool addJitter = false, typename Element>
 __global__ void generateRandUniform(
@@ -160,12 +242,13 @@ __global__ void generateRandUniform(
     if (out_base + 3 < n) out[out_base + 3] = storeOp(v.w);
   }
 }
+#endif // FLASHMOE_PLATFORM_HIP
 
 template <int Arch, bool addJitter = false, typename Element>
 __host__ __forceinline__
 void randUniform(Element* __restrict__ const& out,
                  const size_t& n, const size_t& seed, const float& minv,
-                 const float& maxv, cudaStream_t stream) {
+                 const float& maxv, gpuStream_t stream) {
   constexpr uint threads = 256;
   const auto blocks = static_cast<uint>(cute::ceil_div(n, threads * 4));
   if (n % 4 == 0) {
@@ -303,6 +386,8 @@ auto generate_token_ids_and_expert_counts(const int& S, const int& E, const int&
   return std::make_tuple(std::move(expertCounts), std::move(tokenIds));
 }
 
+#if !defined(FLASHMOE_PLATFORM_HIP)
+// printMetadata uses CuTe print_tensor — only available on CUDA
 __host__ __forceinline__
 void printMetadata(const std::vector<int>& counts, const std::vector<flashmoe::TPS>& ids,
                    const int& roundEC, const int& E) {
@@ -326,6 +411,18 @@ void printMetadata(const std::vector<int>& counts, const std::vector<flashmoe::T
   print_tensor(t2);
   std::free(p);
 }
+#else
+// HIP: printMetadata simplified (no CuTe print_tensor)
+__host__ __forceinline__
+void printMetadata(const std::vector<int>& counts, const std::vector<flashmoe::TPS>& ids,
+                   const int& roundEC, const int& E) {
+  printf("Expert counts: [");
+  for (int e = 0; e < E; ++e) {
+    printf("%d%s", counts[e], e < E - 1 ? ", " : "");
+  }
+  printf("]\n");
+}
+#endif
 
 template <typename Element>
 consteval const char* element_string() {
@@ -342,10 +439,18 @@ consteval const char* element_string() {
   else return "bf16";
 }
 
+#if !defined(FLASHMOE_PLATFORM_HIP)
+// MatX element type mapping — only on CUDA
 template <typename Element>
 using MXE = cuda::std::conditional_t<cuda::std::is_same_v<Element, __half>, matx::matxFp16,
                                      cuda::std::conditional_t<
                                        cuda::std::is_same_v<Element, __nv_bfloat16>, matx::matxBf16,
                                        cuda::std::conditional_t<
                                          cuda::std::is_same_v<Element, cublasdx::tfloat32_t>, float, Element>>>;
+#else
+// HIP: MXE maps to the element itself (no MatX)
+template <typename Element>
+using MXE = Element;
+#endif
+
 #endif //FLASHMOE_COMMON_CUH

@@ -4,7 +4,18 @@
 
 #ifndef FLASHMOE_STRUCTURES_CUH
 #define FLASHMOE_STRUCTURES_CUH
+
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/math_compat.h"
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+#include <cstddef>
+// On HIP, map cuda::std::byte to std::byte
+namespace cuda { namespace std { using ::std::byte; } }
+#else
 #include <cuda/std/cstddef>
+#endif
+
 namespace flashmoe
 {
     enum class DropTokens {

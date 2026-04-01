@@ -4,8 +4,25 @@
 
 #ifndef FLASHMOE_TASK_CUH
 #define FLASHMOE_TASK_CUH
+
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/math_compat.h"
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+#include <cstddef>
+#include <array>
+#include <type_traits>
+// Provide cuda::std::byte, cuda::std::array, cuda::std::is_same_v, etc. on HIP
+namespace cuda { namespace std {
+  using ::std::byte;
+  using ::std::array;
+  using ::std::is_trivially_copyable_v;
+} }
+#else
 #include <cuda/type_traits>
 #include <cuda/std/array>
+#endif
+
 namespace flashmoe {
     constexpr int GEMMs = 2; // within
     enum class TaskType : uint8_t {

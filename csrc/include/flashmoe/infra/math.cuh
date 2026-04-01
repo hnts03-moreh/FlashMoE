@@ -4,8 +4,16 @@
 
 #ifndef FLASHMOE_MATH_CUH
 #define FLASHMOE_MATH_CUH
+
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/math_compat.h"
+
+#if !defined(FLASHMOE_PLATFORM_HIP)
 #include <cuda/cmath>
+#endif
+
 #include "constants.cuh"
+
 namespace flashmoe
 {
   // Also applies to shared memory banks

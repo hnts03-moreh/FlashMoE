@@ -1,8 +1,73 @@
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 from enum import IntEnum
+
+# ---------------------------------------------------------------------------
+# Platform detection
+# ---------------------------------------------------------------------------
+
+class Platform(IntEnum):
+    CUDA = 0
+    HIP = 1
+
+def detect_platform() -> Platform:
+    """Detect the GPU platform.
+
+    Priority:
+      1. ``FLASHMOE_PLATFORM`` environment variable (``cuda`` or ``hip``)
+      2. ``torch.version.hip`` (set when PyTorch is built for ROCm)
+      3. Presence of ``hipcc`` on ``PATH``
+      4. Default to CUDA
+    """
+    env = os.environ.get("FLASHMOE_PLATFORM", "").strip().lower()
+    if env in ("hip", "rocm"):
+        return Platform.HIP
+    if env in ("cuda", "nvidia"):
+        return Platform.CUDA
+
+    # Auto-detect via PyTorch
+    try:
+        import torch
+        if hasattr(torch.version, "hip") and torch.version.hip is not None:
+            return Platform.HIP
+    except ImportError:
+        pass
+
+    # Auto-detect via hipcc on PATH
+    import shutil
+    if shutil.which("hipcc") is not None:
+        rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
+        if os.path.isdir(rocm_path):
+            return Platform.HIP
+
+    return Platform.CUDA
+
+
+# Module-level cached value
+_PLATFORM: Platform | None = None
+
+def get_platform() -> Platform:
+    """Return the cached detected platform."""
+    global _PLATFORM
+    if _PLATFORM is None:
+        _PLATFORM = detect_platform()
+    return _PLATFORM
+
+
+def is_hip() -> bool:
+    return get_platform() == Platform.HIP
+
+
+def is_cuda() -> bool:
+    return get_platform() == Platform.CUDA
+
+
+# ---------------------------------------------------------------------------
+# Data classes & enums
+# ---------------------------------------------------------------------------
 
 class ContextHandle:
     __slots__ = ("_mod", "_ctx")
@@ -127,7 +192,12 @@ class InitArgs:
                  rank_map: List[int] = None,
                  expert_peer_capacity: int = None) -> None:
         from math import ceil
-        assert gpu_arch >= 700
+        # CUDA arch values are numeric (e.g. 900), HIP arch is gfx numeric (e.g. 942)
+        # Both should be >= 700 for CUDA, or any positive for HIP
+        if is_hip():
+            assert gpu_arch > 0, f"gpu_arch must be positive, got {gpu_arch}"
+        else:
+            assert gpu_arch >= 700, f"gpu_arch must be >= 700 for CUDA, got {gpu_arch}"
         self.data_type = data_type
         self.tokens_per_rank = tokens_per_rank
         self.token_dim = token_dim
@@ -174,13 +244,18 @@ def _source_fingerprint() -> str:
     include_dir = root / "csrc" / "include"
 
     h = hashlib.sha256()
-    h.update(b"flashmoe-jit-v1")
+    h.update(b"flashmoe-jit-v2")
 
-    files = sorted(include_dir.glob("**/*.cuh"))
+    # Include platform headers in the fingerprint so that changes to
+    # platform abstraction also invalidate the JIT cache.
+    files = sorted(include_dir.glob("**/*.cuh")) + sorted(include_dir.glob("**/*.h"))
 
     for path in files:
         h.update(str(path.relative_to(root)).encode())
         h.update(path.read_bytes())
+
+    # Also include the detected platform in the hash
+    h.update(f"platform={get_platform().name}".encode())
 
     return h.hexdigest()[:16]
 
@@ -197,7 +272,15 @@ def _get_compiled(arg: InitArgs, src: str, mod_prefix: str, mod_name: str):
 
     _verify_dirs()
 
-    cache = Path(os.environ.get("FLASHMOE_CACHE_DIR", str(Path.home() / ".cache" / "flashmoe_jit")))
+    platform = get_platform()
+    platform_tag = platform.name.lower()  # "cuda" or "hip"
+
+    cache = Path(os.environ.get(
+        "FLASHMOE_CACHE_DIR",
+        str(Path.home() / ".cache" / "flashmoe_jit")
+    ))
+    # Separate cache directories per platform to avoid collisions
+    cache = cache / platform_tag
     cache.mkdir(parents=True, exist_ok=True)
 
     key = hashlib.sha256(f"{mod_name}|py{sys.version_info[:2]}|{src}".encode()).hexdigest()[:16]
@@ -223,7 +306,11 @@ def _get_compiled(arg: InitArgs, src: str, mod_prefix: str, mod_name: str):
     gen_dir.mkdir(exist_ok=True)
     bdir.mkdir(exist_ok=True)
 
-    generated = gen_dir / f"{mod_prefix}_bindings.cu"
+    # HIP source files use .cpp extension; CUDA uses .cu
+    if platform == Platform.HIP:
+        generated = gen_dir / f"{mod_prefix}_bindings.cpp"
+    else:
+        generated = gen_dir / f"{mod_prefix}_bindings.cu"
     generated.write_text(src)
 
     root = Path(__file__).resolve().parent.parent
@@ -269,15 +356,32 @@ def _get_compiled(arg: InitArgs, src: str, mod_prefix: str, mod_name: str):
         if so_path.exists():
             return _load_ext(mod_name, so_path)
 
-        subprocess.run([
+        # Build the cmake command based on platform
+        cmake_args = [
             "cmake", "-S", str(cmake_source_dir), "-B", str(bdir), "-G", "Ninja",
             f"-DGENERATED_SRC={generated}",
             f"-DTARGET_MODULE_NAME={mod_name}",
-            f"-DCMAKE_CUDA_ARCHITECTURES={arg.gpu_arch // 10}",
             f"-DCPM_SOURCE_CACHE={Path.home() / '.cache' / 'cpm'}",
             "-DCMAKE_BUILD_TYPE=Release",
-            f"-DARCH={arg.gpu_arch // 10}"
-        ], check=True)
+        ]
+
+        if platform == Platform.HIP:
+            # HIP build: pass platform, arch string
+            hip_arch = os.environ.get("FLASHMOE_HIP_ARCH", "gfx942")
+            cmake_args += [
+                "-DFLASHMOE_PLATFORM=HIP",
+                f"-DCMAKE_HIP_ARCHITECTURES={hip_arch}",
+                f"-DARCH={hip_arch}",
+            ]
+        else:
+            # CUDA build: traditional numeric arch
+            cmake_args += [
+                "-DFLASHMOE_PLATFORM=CUDA",
+                f"-DCMAKE_CUDA_ARCHITECTURES={arg.gpu_arch // 10}",
+                f"-DARCH={arg.gpu_arch // 10}",
+            ]
+
+        subprocess.run(cmake_args, check=True)
 
         subprocess.run([
             "cmake", "--build", str(bdir), "--parallel"

@@ -2,6 +2,23 @@
  * Copyright (c) 2026, Osayamen Jonathan Aimuyo.
  ******************************************************************************/
 // E2E correctness test and benchmark of fused distributed MoE kernel
+
+#include "../include/flashmoe/platform/platform.h"
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+// HIP/ROCSHMEM: The E2E distributed MoE test requires ROCSHMEM which is not yet
+// fully integrated. This file compiles a stub on HIP that prints a message.
+// The full test will be enabled once ROCSHMEM Python/C++ integration is complete.
+#include <cstdio>
+int main(const int argc, char** argv) {
+    (void)argc; (void)argv;
+    fprintf(stderr, "testFlashMoE: E2E distributed test not yet available on HIP/ROCm.\n"
+                    "Requires ROCSHMEM integration. Use individual kernel tests "
+                    "(testGEMM, testGate, testCombine, testScheduler) instead.\n");
+    return 0;
+}
+#else // CUDA path — original code preserved below
+
 #include <charconv>
 #include <limits>
 #include <string>
@@ -849,3 +866,5 @@ void drive(const int argc, char** argv) {
 int main(const int argc, char** argv) {
   drive(argc, argv);
 }
+
+#endif // FLASHMOE_PLATFORM_HIP

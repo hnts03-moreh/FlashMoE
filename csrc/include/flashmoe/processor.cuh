@@ -7,8 +7,26 @@
 
 #ifndef FLASHMOE_COMPUTE_CUH
 #define FLASHMOE_COMPUTE_CUH
-#include <cuda/atomic>
-#include <nvshmem.h>
+
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/intrinsics.h"
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+#  include "flashmoe/platform/math_compat.h"
+#  include "flashmoe/platform/atomic.h"
+#else
+#  include <cuda/atomic>
+#endif
+
+// NVSHMEM / ROCSHMEM -- handled by comm-porter
+#if defined(FLASHMOE_PLATFORM_HIP)
+// shmem.h may or may not exist yet; the comm-porter creates it
+#  if __has_include("flashmoe/platform/shmem.h")
+#    include "flashmoe/platform/shmem.h"
+#  endif
+#else
+#  include <nvshmem.h>
+#endif
 
 #include "combine.cuh" //  combine function
 #include "infra/constants.cuh"
@@ -36,16 +54,16 @@ namespace flashmoe::processor
             const int& M, const int& N, const int& K, const int& tileIdx) {
     using BLAS = TileGEMM::BLAS;
     auto accumulator = BLAS::suggest_accumulator();
-    using BM = cute::Int<cublasdx::size_of<BLAS>::m>;
-    using BN = cute::Int<cublasdx::size_of<BLAS>::n>;
+    using BM = cute::Int<flashmoe_blas::size_of<BLAS>::m>;
+    using BN = cute::Int<flashmoe_blas::size_of<BLAS>::n>;
     const auto tileCoord = tile::idx2Coord(M / BM{}, N / BN{}, tileIdx);
     // compute Tile
     constexpr TileGEMM tileMainloop{};
     tileMainloop(workspace, a, b, accumulator, M, N, K, tileCoord);
     // gmem -> rmem: prefetch bias
     const auto gD = tile::getBias<BM{}, BN{}>(bias, M, N, cute::select<0, 1>(tileCoord));
-    auto d_frag = cublasdx::make_fragment_like<ElementC>(accumulator.get_results());
-    cublasdx::copy_fragment<cublasdx::alignment_of<BLAS>::c>(gD, d_frag, accumulator);
+    auto d_frag = flashmoe_blas::make_fragment_like<ElementC>(accumulator.get_results());
+    flashmoe_blas::copy_fragment<flashmoe_blas::alignment_of<BLAS>::c>(gD, d_frag, accumulator);
     // Epilogue
     constexpr Activation act{}; // activation function like relu, etc
     // ElementC -> accum type
@@ -53,19 +71,19 @@ namespace flashmoe::processor
     // accum type -> ElementC
     constexpr Converter<ElementC, typename decltype(accumulator)::value_type> storeConv{};
     const auto c_frag = accumulator.get_results();
-    constexpr int accum_size = cublasdx::size(c_frag);
+    constexpr int accum_size = flashmoe_blas::size(c_frag);
     cute::for_each(cute::make_int_sequence<accum_size>{}, [&c_frag, &d_frag](auto i) {
       d_frag(i) = storeConv(act(c_frag(i) + loadConv(d_frag(i))));
     });
-    auto gC = tile::getC<BM{}, BN{}, cublasdx::arrangement_of_v_c<BLAS>>(c, M, N, cute::select<0, 1>(tileCoord));
+    auto gC = tile::getC<BM{}, BN{}, flashmoe_blas::arrangement_of_v_c<BLAS>>(c, M, N, cute::select<0, 1>(tileCoord));
     // TODO For Optimizing the below copy, TMA may help
     // rmem -> smem
-    auto sC = cublasdx::make_tensor(static_cast<ElementC*>(workspace), BLAS::suggest_layout_smem_c());
+    auto sC = flashmoe_blas::make_tensor(static_cast<ElementC*>(workspace), BLAS::suggest_layout_smem_c());
     __syncthreads();
-    cublasdx::copy_fragment<cublasdx::alignment_of<BLAS>::c>(d_frag, sC, accumulator);
+    flashmoe_blas::copy_fragment<flashmoe_blas::alignment_of<BLAS>::c>(d_frag, sC, accumulator);
     __syncthreads();
     // smem -> gmem
-    cublasdx::copy<BLAS, cublasdx::alignment_of<BLAS>::c>(sC, gC);
+    flashmoe_blas::copy<BLAS, flashmoe_blas::alignment_of<BLAS>::c>(sC, gC);
   }
 
   template <
@@ -89,8 +107,8 @@ namespace flashmoe::processor
         TileGEMM::SharedSizeAB::value), TileGEMM::GeneralAlignment::value);
     using BLAS = TileGEMM::BLAS;
     auto accumulator = BLAS::suggest_accumulator();
-    using BM = cute::Int<cublasdx::size_of<BLAS>::m>;
-    using BN = cute::Int<cublasdx::size_of<BLAS>::n>;
+    using BM = cute::Int<flashmoe_blas::size_of<BLAS>::m>;
+    using BN = cute::Int<flashmoe_blas::size_of<BLAS>::n>;
     const auto tileCoord = tile::idx2Coord(M / BM{}, N / BN{}, tileIdx);
     // compute Tile
     constexpr TileGEMM tileMainloop{};
@@ -98,8 +116,8 @@ namespace flashmoe::processor
     __syncthreads();
     // gmem -> rmem: prefetch bias
     const auto gD = tile::getBias<BM{}, BN{}>(bias, M, N, cute::select<0, 1>(tileCoord));
-    auto d_frag = cublasdx::make_fragment_like<ElementC>(accumulator.get_results());
-    cublasdx::copy_fragment<cublasdx::alignment_of<BLAS>::c>(gD, d_frag, accumulator);
+    auto d_frag = flashmoe_blas::make_fragment_like<ElementC>(accumulator.get_results());
+    flashmoe_blas::copy_fragment<flashmoe_blas::alignment_of<BLAS>::c>(gD, d_frag, accumulator);
     // Epilogue
     constexpr Activation act{}; // activation function like silu, gelu, etc
     // ElementC -> accum type
@@ -109,40 +127,40 @@ namespace flashmoe::processor
     // accum type -> ElementC
     constexpr Converter<ElementC, AccumType> storeConv{};
     const auto c_frag = accumulator.get_results();
-    constexpr int accum_size = cublasdx::size(c_frag);
+    constexpr int accum_size = flashmoe_blas::size(c_frag);
     cute::for_each(cute::make_int_sequence<accum_size>{}, [&](auto i) {
       const auto g = (c_frag(i) + loadConv(d_frag(i))) * swishBeta;
       d_frag(i) = storeConv(swishAlpha * act(g));
     });
     // rmem -> smem, cache gate results
     // holding in registers otherwise would blow up pressure
-    auto sGate = cublasdx::make_tensor(reinterpret_cast<ElementC*>(gateCache), BLAS::suggest_layout_smem_c());
-    cublasdx::copy_fragment<cublasdx::alignment_of<BLAS>::c>(d_frag, sGate, accumulator);
+    auto sGate = flashmoe_blas::make_tensor(reinterpret_cast<ElementC*>(gateCache), BLAS::suggest_layout_smem_c());
+    flashmoe_blas::copy_fragment<flashmoe_blas::alignment_of<BLAS>::c>(d_frag, sGate, accumulator);
     // now, compute v tile
     tileMainloop(workspace, a, bV, accumulator, M, N, K, tileCoord);
     auto cv_frag = accumulator.get_results();
     const auto gV = tile::getBias<BM{}, BN{}>(biasV, M, N, cute::select<0, 1>(tileCoord));
-    cublasdx::copy_fragment<cublasdx::alignment_of<BLAS>::c>(gV, d_frag, accumulator);
+    flashmoe_blas::copy_fragment<flashmoe_blas::alignment_of<BLAS>::c>(gV, d_frag, accumulator);
     cute::for_each(cute::make_int_sequence<accum_size>{}, [&](auto i) {
       // x = (a @ bV) + biasV
       cv_frag(i) = cv_frag(i) + loadConv(d_frag(i));
     });
     // smem -> rmem, load g tile
     __syncthreads();
-    cublasdx::copy_fragment<cublasdx::alignment_of<BLAS>::c>(sGate, d_frag, accumulator);
+    flashmoe_blas::copy_fragment<flashmoe_blas::alignment_of<BLAS>::c>(sGate, d_frag, accumulator);
     cute::for_each(cute::make_int_sequence<accum_size>{}, [&](auto i) {
       // y = x * (act(a @ b))
       d_frag(i) = storeConv(cv_frag(i) * loadConv(d_frag(i)));
     });
-    auto gC = tile::getC<BM{}, BN{}, cublasdx::arrangement_of_v_c<BLAS>>(c, M, N, cute::select<0, 1>(tileCoord));
+    auto gC = tile::getC<BM{}, BN{}, flashmoe_blas::arrangement_of_v_c<BLAS>>(c, M, N, cute::select<0, 1>(tileCoord));
     // TODO For Optimizing the below copy, TMA may help
     // rmem -> smem
-    auto sC = cublasdx::make_tensor(reinterpret_cast<ElementC*>(workspace), BLAS::suggest_layout_smem_c());
+    auto sC = flashmoe_blas::make_tensor(reinterpret_cast<ElementC*>(workspace), BLAS::suggest_layout_smem_c());
     __syncthreads();
-    cublasdx::copy_fragment<cublasdx::alignment_of<BLAS>::c>(d_frag, sC, accumulator);
+    flashmoe_blas::copy_fragment<flashmoe_blas::alignment_of<BLAS>::c>(d_frag, sC, accumulator);
     __syncthreads();
     // smem -> gmem
-    cublasdx::copy<BLAS, cublasdx::alignment_of<BLAS>::c>(sC, gC);
+    flashmoe_blas::copy<BLAS, flashmoe_blas::alignment_of<BLAS>::c>(sC, gC);
   }
 
   struct ProcessorArgs {
@@ -288,7 +306,7 @@ namespace flashmoe::processor
         __syncwarp();
         auto payload = cuda::std::bit_cast<uint64_t>(tqs);
         // broadcast new payload from thread 0 to other threads in the warp
-        payload = __shfl_sync(0xffffffff, payload, 0);
+        payload = __shfl_sync(FLASHMOE_FULL_LANE_MASK, payload, 0);
         tqs = cuda::std::bit_cast<TQSignal>(payload);
         const auto* __restrict__ gtQ = pA.tQ + tqs.decodeSig();
         if (!tqs.interrupt && threadIdx.x < taskWidth) {
@@ -345,7 +363,7 @@ namespace flashmoe::processor
           const auto* bP = expertDownWeights + expertWeightSize * task.localExpertIdx();
           auto* __restrict__ cP = reinterpret_cast<Element*>(task.cData[1]);
           const auto* __restrict__ biasP = biasDown + static_cast<size_t>(H) * task.localExpertIdx();
-          fGET<TileGEMM1, cublasdx::identity>(workspace, aP, bP, cP, biasP, task.M(), H, I, task.tileIdx);
+          fGET<TileGEMM1, flashmoe_blas::identity>(workspace, aP, bP, cP, biasP, task.M(), H, I, task.tileIdx);
           __syncthreads();
           if (!threadIdx.x) {
             constexpr int bM = cute::get<0>(typename TileGEMM1::TileShape{});
@@ -372,12 +390,13 @@ namespace flashmoe::processor
                 // clear the counter as it would no longer be used in this epoch
                 tileSync.store(0, cuda::memory_order_relaxed);
                 const auto symOffset = static_cast<size_t>(bM) * mCoord * H * sizeof(Element);
-                nvshmem_putmem_signal_nbi(task.rcData + symOffset,
+                flashmoe::shmem::device::putmem_signal_nbi(
+                                          task.rcData + symOffset,
                                           task.cData[1] + symOffset,
                                           static_cast<size_t>(task.tileSize() * H) * sizeof(Element),
                                           task.flags,
                                           sigPayload,
-                                          NVSHMEM_SIGNAL_SET,
+                                          SHMEM_SIGNAL_SET,
                                           task.pe());
               }
             }

@@ -14,6 +14,9 @@
 #define CSRC_EDGE_CUH
 
 #include <cstdlib>
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/math_compat.h"
+
 namespace flashmoe{
     // Source for floatEqual: https://stackoverflow.com/a/253874
     template<typename F> requires cuda::std::is_floating_point_v<F>

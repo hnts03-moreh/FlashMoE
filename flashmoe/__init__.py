@@ -1,22 +1,37 @@
 from . import router
-from .jit import InitArgs, ContextHandle, Topology, MLPType, ActivationType, DataType, ForwardArgs
+from .jit import (
+    InitArgs, ContextHandle, Topology, MLPType, ActivationType, DataType,
+    ForwardArgs, Platform, detect_platform, get_platform, is_hip, is_cuda,
+)
 from .cb import get_local_rank
 from . import reference
 
-SHOULD_FINALIZE_NVSHMEM = False
+SHOULD_FINALIZE_COMM = False
+
 def initialize(arg: InitArgs) -> ContextHandle:
     from .jit import _get_compiled
     from .bindings import flashmoe_bindings
     from . import cb
-    import nvshmem.core as nvshmem
-    import cuda.core as cuda
+
+    _platform = get_platform()
+
+    if _platform == Platform.CUDA:
+        import nvshmem.core as nvshmem
+        import cuda.core as cuda
+    elif _platform == Platform.HIP:
+        # Use the abstracted comm / gpu helpers from cb
+        nvshmem = cb._get_comm()
+        cuda = cb._get_gpu()
+    else:
+        raise RuntimeError(f"Unknown platform: {_platform}")
+
     assert arg.ep_rank is None or ((arg.rank_map is not None)
         and (arg.ep_world is not None) and (arg.expert_map is not None)
         and (arg.num_local_experts is not None)
         and (arg.my_pe is not None)), "if rank is set, then so should all dependent metadata"
     if arg.ep_rank is None:
-        global SHOULD_FINALIZE_NVSHMEM
-        SHOULD_FINALIZE_NVSHMEM = True
+        global SHOULD_FINALIZE_COMM
+        SHOULD_FINALIZE_COMM = True
         cb.initialize()
         arg.ep_rank = cb.get_rank()
         arg.my_pe = cb.get_rank()
@@ -33,13 +48,28 @@ def initialize(arg: InitArgs) -> ContextHandle:
         arg.rank_map = []
         for i in range(arg.ep_world):
             arg.rank_map.append(i)
-    nvshmem.sync_all(stream=cuda.Stream.from_handle(arg.stream_ptr)) # <- needed to eagerly initialize state before detecting topology
+
+    # sync_all before topology detection
+    if _platform == Platform.CUDA:
+        nvshmem.sync_all(stream=cuda.Stream.from_handle(arg.stream_ptr))
+    else:
+        cb.sync_all(arg.stream_ptr)
+
     def detect_topo():
-        assert nvshmem.init_status() == nvshmem.InitStatus.STATUS_IS_INITIALIZED
-        if nvshmem.team_n_pes(nvshmem.Teams.TEAM_SHARED) == nvshmem.n_pes():
-            return Topology.NVLINK_ONLY
+        if _platform == Platform.CUDA:
+            assert nvshmem.init_status() == nvshmem.InitStatus.STATUS_IS_INITIALIZED
+            if nvshmem.team_n_pes(nvshmem.Teams.TEAM_SHARED) == nvshmem.n_pes():
+                return Topology.NVLINK_ONLY
+            else:
+                return Topology.MIXED
         else:
-            return Topology.MIXED
+            # On HIP/ROCm, use the abstracted comm backend
+            comm = cb._get_comm()
+            assert comm.init_status() == comm.InitStatus.STATUS_IS_INITIALIZED
+            if comm.team_n_pes(comm.Teams.TEAM_SHARED) == comm.n_pes():
+                return Topology.NVLINK_ONLY
+            else:
+                return Topology.MIXED
     arg.topo = detect_topo()
 
     mod_prefix = "flashmoe_moe"
@@ -93,12 +123,22 @@ def forward(handle: ContextHandle, args: ForwardArgs) -> None:
 
 def finalize(handle: ContextHandle, stream_ptr: int) -> None:
     handle.mod.finalize(handle.context, stream_ptr)
-    global SHOULD_FINALIZE_NVSHMEM
-    if SHOULD_FINALIZE_NVSHMEM:
-        SHOULD_FINALIZE_NVSHMEM = False
-        import cuda.core as cuda
-        import nvshmem.core as nvshmem
-        dev = cuda.Device(get_local_rank())
-        dev.sync()
-        if nvshmem.init_status() == nvshmem.InitStatus.STATUS_IS_INITIALIZED:
-            nvshmem.finalize()
+    global SHOULD_FINALIZE_COMM
+    if SHOULD_FINALIZE_COMM:
+        SHOULD_FINALIZE_COMM = False
+        _platform = get_platform()
+        if _platform == Platform.CUDA:
+            import cuda.core as cuda
+            import nvshmem.core as nvshmem
+            dev = cuda.Device(get_local_rank())
+            dev.sync()
+            if nvshmem.init_status() == nvshmem.InitStatus.STATUS_IS_INITIALIZED:
+                nvshmem.finalize()
+        else:
+            from . import cb
+            gpu = cb._get_gpu()
+            comm = cb._get_comm()
+            dev = gpu.Device(get_local_rank())
+            dev.sync()
+            if comm.init_status() == comm.InitStatus.STATUS_IS_INITIALIZED:
+                comm.finalize()

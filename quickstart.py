@@ -1,13 +1,85 @@
 import random
 
-import cuda.core as cuda
 import argparse
 import torch
 
 import flashmoe
 
+
+def _get_gpu_device_and_stream(device_id: int):
+    """Return (dev, stream, stream_ptr, arch) using the appropriate GPU runtime."""
+    if flashmoe.is_hip():
+        # Use hip-python to create device + stream; arch is gfx numeric (e.g. 942)
+        from hip import hip as _hip
+        err = _hip.hipSetDevice(device_id)
+        assert err == 0, f"hipSetDevice failed: {err}"
+
+        err, stream = _hip.hipStreamCreate()
+        assert err == 0, f"hipStreamCreate failed: {err}"
+        stream_ptr = int(stream)
+
+        # For MI300X, the arch is 942.  Allow override via env var.
+        import os
+        arch_str = os.environ.get("FLASHMOE_HIP_ARCH", "gfx942")
+        # Strip the "gfx" prefix to get the numeric value
+        arch = int(arch_str.replace("gfx", ""))
+
+        class _DevShim:
+            """Thin shim to match cuda.core.Device API used below."""
+            def sync(self):
+                _hip.hipDeviceSynchronize()
+            def close_stream(self, s):
+                _hip.hipStreamDestroy(s)
+
+        return _DevShim(), stream, stream_ptr, arch
+    else:
+        import cuda.core as cuda
+        dev = cuda.Device(device_id)
+        dev.set_current()
+        stream = dev.create_stream()
+        stream_ptr = int(stream.handle)
+        arch = int(dev.arch) * 10
+        return dev, stream, stream_ptr, arch
+
+
+def _get_torch_device_str(device_id: int) -> str:
+    """Return the torch device string for the given device id."""
+    if flashmoe.is_hip():
+        # PyTorch ROCm uses 'cuda:N' device strings (HIP backend)
+        return f"cuda:{device_id}"
+    else:
+        return f"cuda:{device_id}"
+
+
+def _sync_stream(stream):
+    """Synchronize a stream object."""
+    if flashmoe.is_hip():
+        from hip import hip as _hip
+        _hip.hipStreamSynchronize(stream)
+    else:
+        stream.sync()
+
+
+def _close_stream(stream):
+    """Destroy / close a stream object."""
+    if flashmoe.is_hip():
+        from hip import hip as _hip
+        _hip.hipStreamDestroy(stream)
+    else:
+        stream.close()
+
+
+def _sync_device(dev):
+    """Synchronize the device."""
+    if flashmoe.is_hip():
+        from hip import hip as _hip
+        _hip.hipDeviceSynchronize()
+    else:
+        dev.sync()
+
+
 def get_shared_seed(rank_: int, device_id: int, use_torch: bool) -> int:
-    torch_device_ = f"cuda:{device_id}"
+    torch_device_ = _get_torch_device_str(device_id)
     shared_seed = 0
     if rank_ == 0:
         shared_seed = random.randint(1, 2**31 - 1)
@@ -36,18 +108,24 @@ def run_fused_moe_forward_w_correctness_check(tokens_per_rank: int,
         local_rank = int(os.environ['LOCAL_RANK'])
         torch.cuda.set_device(local_rank)
         device = torch.device("cuda", local_rank)
-        dist.init_process_group(
-            backend="cpu:gloo,cuda:nccl",
-            rank=int(os.environ['RANK']),
-            world_size=world_size,
-            device_id=device
-        )
+        if flashmoe.is_cuda():
+            dist.init_process_group(
+                backend="cpu:gloo,cuda:nccl",
+                rank=int(os.environ['RANK']),
+                world_size=world_size,
+                device_id=device
+            )
+        else:
+            # ROCm -- NCCL backend works via RCCL
+            dist.init_process_group(
+                backend="cpu:gloo,cuda:nccl",
+                rank=int(os.environ['RANK']),
+                world_size=world_size,
+                device_id=device
+            )
+
     # setup device ordinals
-    dev = cuda.Device(device_id)
-    dev.set_current()
-    stream = dev.create_stream()
-    stream_ptr = int(stream.handle)
-    arch = int(dev.arch) * 10
+    dev, stream, stream_ptr, arch = _get_gpu_device_and_stream(device_id)
 
     mlp_type = flashmoe.MLPType.GATED
     data_type = flashmoe.DataType.BF16
@@ -77,7 +155,7 @@ def run_fused_moe_forward_w_correctness_check(tokens_per_rank: int,
                                       num_experts, k, flashmoe.cb.get_world_size()))
     flashmoe.cb.sync_all(stream_ptr)
 
-    torch_device = f"cuda:{device_id}"
+    torch_device = _get_torch_device_str(device_id)
     # construct forward arguments for MoE with Gated MLP
     tokens = torch.empty((tokens_per_rank, token_dim), device=torch_device, dtype=t_dtype).uniform_(-1.0, 1.0).contiguous()
     expert_counts = torch.zeros(num_experts, device=torch_device, dtype=torch.int32).contiguous()
@@ -146,14 +224,14 @@ def run_fused_moe_forward_w_correctness_check(tokens_per_rank: int,
         expert_up_v=expert_up_v.data_ptr(),
         bias_up_v=bias_up_v.data_ptr()
     )
-    dev.sync() # <- ensures all torch ops are done before we start
+    _sync_device(dev)  # <- ensures all torch ops are done before we start
     # call forward of fused router
     flashmoe.router.forward(router_handle, flash_handle, rfa)
     # call forward of FlashMoE
     flashmoe.forward(flash_handle, args)
     # call reference
     flashmoe.reference.forward(ref_handle, flash_handle.mod.get_tIdx(flash_handle.context), args, rea)
-    stream.sync()
+    _sync_stream(stream)
     # compare fused kernel and reference
     match_count = (torch.isclose(moe_out, ref_out, rtol=8e-2, atol=8e-3)).sum().item()
     error_p = 1.0 - (match_count / (tokens_per_rank * token_dim))
@@ -161,7 +239,7 @@ def run_fused_moe_forward_w_correctness_check(tokens_per_rank: int,
     # call finalize
     flashmoe.finalize(flash_handle, stream_ptr)
     flashmoe.router.finalize(router_handle, stream_ptr)
-    stream.close()
+    _close_stream(stream)
     if use_torch_init:
         import torch.distributed as dist
         dist.destroy_process_group()
@@ -180,20 +258,25 @@ def run_fused_moe_forward(tokens_per_rank: int,
         local_rank = int(os.environ['LOCAL_RANK'])
         torch.cuda.set_device(local_rank)
         device = torch.device("cuda", local_rank)
-        dist.init_process_group(
-            backend="cpu:gloo,cuda:nccl",
-            rank=int(os.environ['RANK']),
-            world_size=world_size,
-            device_id=device
-        )
-    # setup device ordinals
-    dev = cuda.Device(device_id)
-    dev.set_current()
-    stream = dev.create_stream()
-    stream_ptr = int(stream.handle)
-    arch = int(dev.arch) * 10
+        if flashmoe.is_cuda():
+            dist.init_process_group(
+                backend="cpu:gloo,cuda:nccl",
+                rank=int(os.environ['RANK']),
+                world_size=world_size,
+                device_id=device
+            )
+        else:
+            dist.init_process_group(
+                backend="cpu:gloo,cuda:nccl",
+                rank=int(os.environ['RANK']),
+                world_size=world_size,
+                device_id=device
+            )
 
-    torch_device = f"cuda:{device_id}"
+    # setup device ordinals
+    dev, stream, stream_ptr, arch = _get_gpu_device_and_stream(device_id)
+
+    torch_device = _get_torch_device_str(device_id)
     mlp_type = flashmoe.MLPType.GATED
     data_type = flashmoe.DataType.BF16
     t_dtype = torch.bfloat16 if data_type == flashmoe.DataType.BF16 else torch.float16
@@ -254,45 +337,66 @@ def run_fused_moe_forward(tokens_per_rank: int,
                                             expert_counts=expert_counts.data_ptr(),
                                             stream_ptr=stream_ptr)
 
-    dev.sync()  # <- ensures all torch ops are done before we start
+    _sync_device(dev)  # <- ensures all torch ops are done before we start
     # call forward of fused router
     flashmoe.router.forward(router_handle, flash_handle, rfa)
     # call forward of FlashMoE
     flashmoe.forward(flash_handle, args)
 
     # benchmark with cuda graph
-    capture_stream = torch.cuda.ExternalStream(stream_ptr, device=torch_device)
-    g = torch.cuda.CUDAGraph()
+    if flashmoe.is_cuda():
+        capture_stream = torch.cuda.ExternalStream(stream_ptr, device=torch_device)
+        g = torch.cuda.CUDAGraph()
 
-    iters = 128
-    graph_launches = 4
+        iters = 128
+        graph_launches = 4
 
-    with torch.cuda.graph(g, stream=capture_stream):
+        with torch.cuda.graph(g, stream=capture_stream):
+            for _ in range(iters):
+                flashmoe.forward(flash_handle, args)
+
+        # Warmup once
+        with torch.cuda.stream(capture_stream):
+            g.replay()
+
+        # Measure
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+
+        with torch.cuda.stream(capture_stream):
+            start.record()
+            for _ in range(graph_launches):
+                g.replay()
+            end.record()
+        end.synchronize()
+        total_ms = start.elapsed_time(end)
+
+        kernel_time = total_ms / (iters * graph_launches)
+        print("{}, {:.5f}".format(rank, kernel_time))
+    else:
+        # HIP path: hipGraph support exists on ROCm >= 5.x via the same
+        # torch.cuda API (backed by HIP), but CUDA graph capture may not
+        # work for all kernels.  Fall back to simple timing.
+        iters = 128
+        _sync_stream(stream)
+
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        start_event.record()
         for _ in range(iters):
             flashmoe.forward(flash_handle, args)
+        end_event.record()
+        end_event.synchronize()
 
-    # Warmup once
-    with torch.cuda.stream(capture_stream):
-        g.replay()
+        total_ms = start_event.elapsed_time(end_event)
+        kernel_time = total_ms / iters
+        print("{}, {:.5f}".format(rank, kernel_time))
 
-    # Measure
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-
-    with torch.cuda.stream(capture_stream):
-        start.record()
-        for _ in range(graph_launches):
-            g.replay()
-        end.record()
-    end.synchronize()
-    total_ms = start.elapsed_time(end)
-
-    kernel_time = total_ms / (iters * graph_launches)
-    print("{}, {:.5f}".format(rank, kernel_time))
     # call finalize
     flashmoe.finalize(flash_handle, stream_ptr)
     flashmoe.router.finalize(router_handle, stream_ptr)
-    stream.close()
+    _close_stream(stream)
     if use_torch_init:
         import torch.distributed as dist
         dist.destroy_process_group()

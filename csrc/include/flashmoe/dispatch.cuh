@@ -7,9 +7,26 @@
 
 #ifndef FLASHMOE_DISPATCH_CUH
 #define FLASHMOE_DISPATCH_CUH
-#include <cuda/std/bit>
-#include <cuda/ptx>
-#include <nvshmem.h>
+
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/atomic.h"
+#include "flashmoe/platform/math_compat.h"
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+#  include <bit>            // std::bit_cast (C++20)
+#else
+#  include <cuda/std/bit>
+#  include <cuda/ptx>
+#endif
+
+// NVSHMEM / ROCSHMEM
+#if defined(FLASHMOE_PLATFORM_HIP)
+#  if __has_include("flashmoe/platform/shmem.h")
+#    include "flashmoe/platform/shmem.h"
+#  endif
+#else
+#  include <nvshmem.h>
+#endif
 
 #include "infra/heap.cuh"
 #include "infra/math.cuh"
@@ -135,8 +152,21 @@ namespace flashmoe
             const auto* __restrict__ aP = vTokens + tokenIdx * vH;
             // coalesced vectorized copy
             for (int k = static_cast<int>(threadIdx.x); k < vH; k += threads) {
+#if defined(FLASHMOE_PLATFORM_HIP)
+              // HIP: plain global load/store; non-coherent caching hints
+              // are handled by the compiler/hardware on CDNA.
+              const auto v = __builtin_nontemporal_load(aP + k);
+              __builtin_nontemporal_store(v, localPH + k);
+#else
+#if defined(FLASHMOE_PLATFORM_HIP)
+              // HIP: no PTX intrinsics; use regular load/store (compiler vectorizes)
+              const auto v = *(aP + k);
+              *(localPH + k) = v;
+#else
               const auto v = cuda::ptx::ld_nc_L1_no_allocate_L2_256B(cuda::ptx::space_global, aP + k);
               cuda::ptx::st(cuda::ptx::space_global, localPH + k, v);
+#endif
+#endif
             }
           }
         }
@@ -179,6 +209,16 @@ namespace flashmoe
             };
             if (topo == Topology::MIXED && lI.isRemote) {
               // do RDMA transfer + signal
+#if defined(FLASHMOE_PLATFORM_HIP)
+              flashmoe::shmem::device::putmem_signal_nbi(
+                symHeap.advance<0, 1>(epRank, lI.expertLocalIdx),
+                peerHeap,
+                sizeof(VectorElement) * routedTokens * vH,
+                signals + flagOffset,
+                std::bit_cast<uint64_t>(sigPayload),
+                SHMEM_SIGNAL_SET,
+                lI.pe);
+#else
               nvshmem_putmem_signal_nbi(
                 symHeap.advance<0, 1>(epRank, lI.expertLocalIdx),
                 peerHeap,
@@ -187,6 +227,7 @@ namespace flashmoe
                 cuda::std::bit_cast<uint64_t>(sigPayload),
                 NVSHMEM_SIGNAL_SET,
                 lI.pe);
+#endif
             }
             else {
               cuda::atomic_ref<uint64_t, cuda::thread_scope_system> sf{*(lI.remoteSFlags + flagOffset)};
@@ -206,8 +247,13 @@ namespace flashmoe
         };
         if (topo == Topology::MIXED && lI.isRemote) {
           // transmit signal via RDMA
+#if defined(FLASHMOE_PLATFORM_HIP)
+          flashmoe::shmem::device::signal_op(signals + flagOffset,
+            std::bit_cast<uint64_t>(sigPayload), SHMEM_SIGNAL_SET, lI.pe);
+#else
           nvshmemx_signal_op(signals + flagOffset,
-          cuda::std::bit_cast<uint64_t>(sigPayload), NVSHMEM_SIGNAL_SET, lI.pe);
+            cuda::std::bit_cast<uint64_t>(sigPayload), NVSHMEM_SIGNAL_SET, lI.pe);
+#endif
         }
         else {
           cuda::atomic_ref<uint64_t, cuda::thread_scope_system> sf{*(lI.remoteSFlags + flagOffset)};

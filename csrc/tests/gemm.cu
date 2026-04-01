@@ -2,16 +2,23 @@
 // Created by osayamen on 12/13/25.
 //
 // Benchmark sweep and correctness test for the tiled GEMM underlying FlashMoE.
-// We compare against the numerical library MatX which calls cuBLASLt underneath.
+// On CUDA: compares against MatX (cuBLASLt). On HIP: runs kernel only (no MatX reference).
 
 #include <random>
 
+#if defined(FLASHMOE_PLATFORM_HIP)
+#include <rocblasdx/rocblasdx.hpp>
+#include "../include/flashmoe/infra/activation.cuh"
+#else
 #include <cutlass/epilogue/thread/activation.h>
 #include <cublasdx.hpp>
+#endif
 
 #include "common.cuh"
 #include "debug.cuh"
 #include "../include/flashmoe/tile.cuh"
+
+// Use the namespace alias from tile.cuh: flashmoe_blas = rocblasdx (HIP) or cublasdx (CUDA)
 
 template<typename TileGEMM, typename Activation, typename ElementC, typename Element>
 __device__ __forceinline__
@@ -23,16 +30,16 @@ void gemmMainloop(void* __restrict__ const& workspace,
     const int& M, const int& N, const int& K, const int& tileIdx) {
     using BLAS = TileGEMM::BLAS;
     auto accumulator = BLAS::suggest_accumulator();
-    using BM = cute::Int<cublasdx::size_of<BLAS>::m>;
-    using BN = cute::Int<cublasdx::size_of<BLAS>::n>;
+    using BM = cute::Int<flashmoe_blas::size_of<BLAS>::m>;
+    using BN = cute::Int<flashmoe_blas::size_of<BLAS>::n>;
     const auto tileCoord = flashmoe::tile::idx2Coord(M / BM{}, N / BN{}, tileIdx);
     // compute Tile
     constexpr TileGEMM tileMainloop{};
     tileMainloop(workspace, a, b, accumulator, M, N, K, tileCoord);
     // gmem -> rmem: load bias
     const auto gD = flashmoe::tile::getBias<BM{}, BN{}>(bias, M, N, cute::select<0, 1>(tileCoord));
-    auto d_frag = cublasdx::make_fragment_like<ElementC>(accumulator.get_results());
-    cublasdx::copy_fragment<cublasdx::alignment_of<BLAS>::c>(gD, d_frag, accumulator);
+    auto d_frag = flashmoe_blas::make_fragment_like<ElementC>(accumulator.get_results());
+    flashmoe_blas::copy_fragment<flashmoe_blas::alignment_of<BLAS>::c>(gD, d_frag, accumulator);
     // Epilogue
     constexpr Activation act{}; // activation function like relu, etc
     using AccumType = decltype(accumulator)::value_type;
@@ -41,32 +48,32 @@ void gemmMainloop(void* __restrict__ const& workspace,
     // accum type -> ElementC
     constexpr flashmoe::Converter<ElementC, AccumType> storeConv{};
     const auto c_frag = accumulator.get_results();
-    constexpr int accum_size = cublasdx::size(c_frag);
+    constexpr int accum_size = flashmoe_blas::size(c_frag);
     cute::for_each(cute::make_int_sequence<accum_size>{}, [&c_frag, &d_frag](auto i) {
         d_frag(i) = storeConv(act(c_frag(i) + loadConv(d_frag(i))));
     });
-    auto gC = flashmoe::tile::getC<BM{}, BN{}, cublasdx::arrangement_of_v_c<BLAS>>(c, M, N,
+    auto gC = flashmoe::tile::getC<BM{}, BN{}, flashmoe_blas::arrangement_of_v_c<BLAS>>(c, M, N,
         cute::select<0, 1>(tileCoord));
     // rmem -> smem
-    auto sC = cublasdx::make_tensor(static_cast<ElementC*>(workspace), BLAS::suggest_layout_smem_c());
+    auto sC = flashmoe_blas::make_tensor(static_cast<ElementC*>(workspace), BLAS::suggest_layout_smem_c());
     __syncthreads();
-    cublasdx::copy_fragment<cublasdx::alignment_of<BLAS>::c>(d_frag, sC, accumulator);
+    flashmoe_blas::copy_fragment<flashmoe_blas::alignment_of<BLAS>::c>(d_frag, sC, accumulator);
     __syncthreads();
     // smem -> gmem
-    cublasdx::copy<BLAS, cublasdx::alignment_of<BLAS>::c>(sC, gC);
+    flashmoe_blas::copy<BLAS, flashmoe_blas::alignment_of<BLAS>::c>(sC, gC);
 }
 
 #define SC(T, v) static_cast<T>(v)
 // Fused kernel for Act((a @ b) + bias)
 template<typename TileGEMM, typename Activation, typename Element, typename ElementC>
-requires(cublasdx::is_blas_execution_v<typename TileGEMM::BLAS>)
+requires(flashmoe_blas::is_blas_execution_v<typename TileGEMM::BLAS>)
 __launch_bounds__(TileGEMM::BLAS::max_threads_per_block, 1)
 __global__ void gk(const Element* __restrict__ a, const Element* __restrict__ b,
     ElementC* __restrict__ c, const ElementC* __restrict__ bias,
     const __grid_constant__ int M, const __grid_constant__ int N, const int __grid_constant__ K) {
     using BLAS = TileGEMM::BLAS;
-    constexpr int bM = cublasdx::size_of<BLAS>::m;
-    constexpr int bN = cublasdx::size_of<BLAS>::n;
+    constexpr int bM = flashmoe_blas::size_of<BLAS>::m;
+    constexpr int bN = flashmoe_blas::size_of<BLAS>::n;
     const int nTiles = (M / bM) * (N / bN);
     extern __shared__ __align__(TileGEMM::GeneralAlignment::value) cuda::std::byte gemmWorkspace[];
     // simple row-major tile scheduling,
@@ -76,6 +83,8 @@ __global__ void gk(const Element* __restrict__ a, const Element* __restrict__ b,
     }
 }
 
+#if !defined(FLASHMOE_PLATFORM_HIP)
+// MatX reference — CUDA only
 template<int warmup, int runs, typename AccumType, typename Activation, typename Element, typename ElementC>
 __host__ __forceinline__
 auto reference(void* const& a, void* const& b,
@@ -275,3 +284,126 @@ void kickStart(const int argc, char** argv) {
 int main(const int argc, char** argv) {
     kickStart(argc, argv);
 }
+#else
+// HIP: kernel-only benchmark (no MatX reference)
+template<typename TileGEMM, typename Activation, int threads, int sharedSize,
+typename AccumType, typename Element, typename ElementC>
+__host__ __forceinline__
+auto gk_run_hip(Element* const& a, Element* const& b,
+    ElementC* const& c, ElementC* const& bias,
+    const int& M, const int& N, const int& K, const int& blocks,
+    gpuStream_t stream) {
+    constexpr auto runs = 128;
+    constexpr auto warmup = 32;
+    // warmup
+    for (int i = 0; i < warmup; ++i) {
+        gk<TileGEMM, Activation><<<blocks, threads, sharedSize, stream>>>(a, b, c, bias, M, N, K);
+    }
+    CHECK_CUDA(gpuStreamSynchronize(stream));
+
+    gpuEvent_t start, stop;
+    CHECK_CUDA(gpuEventCreate(&start));
+    CHECK_CUDA(gpuEventCreate(&stop));
+    CHECK_CUDA(gpuEventRecord(start, stream));
+    for (int i = 0; i < runs; ++i) {
+        gk<TileGEMM, Activation><<<blocks, threads, sharedSize, stream>>>(a, b, c, bias, M, N, K);
+    }
+    CHECK_CUDA(gpuEventRecord(stop, stream));
+    CHECK_CUDA(gpuEventSynchronize(stop));
+    float k_ms = 0;
+    CHECK_CUDA(gpuEventElapsedTime(&k_ms, start, stop));
+    CHECK_CUDA(gpuPeekAtLastError());
+    gpuEventDestroy(start);
+    gpuEventDestroy(stop);
+    return k_ms / static_cast<float>(runs);
+}
+
+template<int bM, int bN, int bK, int pipeStages, typename AccumType, typename Element, typename ElementC>
+__host__ __forceinline__
+void driver(const int& M, const int& N, const int& K, const float& rtol, const float& atol, gpuStream_t stream) {
+    Element* a = nullptr;
+    Element* b = nullptr;
+    ElementC* c = nullptr;
+    ElementC* bias = nullptr;
+    CHECK_CUDA(gpuMallocAsync(&a, M * K * sizeof(Element), stream));
+    CHECK_CUDA(gpuMallocAsync(&b, N * K * sizeof(Element), stream));
+    CHECK_CUDA(gpuMallocAsync(&c, M * N * sizeof(ElementC), stream));
+    CHECK_CUDA(gpuMallocAsync(&bias, N * sizeof(ElementC), stream));
+
+    using Act = flashmoe::hip_compat::ReLU<AccumType>;
+    constexpr int threads = flashmoe::tile::suggest_thread_count<bM, bN, bK, FLASHMOE_ARCH, Element, AccumType>();
+    using TileGEMM = flashmoe::tile::CollectiveMainloop<
+            bM, bN, bK, FLASHMOE_ARCH, Element, AccumType, threads, pipeStages
+    >;
+    auto kernel = gk<TileGEMM, Act, Element, ElementC>;
+    int bps = 0;
+    constexpr auto sharedSize = bK * pipeStages * (bM + bN) * sizeof(Element);
+    CHECK_CUDA(gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, sharedSize));
+    CHECK_CUDA(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel, threads, sharedSize));
+    const int blocks = cute::min((M / bM) * (N / bN), bps * NUM_SMS);
+    std::random_device rd;
+    constexpr auto min_v = -1.f;
+    constexpr auto max_v = 1.f;
+    randUniform<FLASHMOE_ARCH>(a, M * K, rd(), min_v, max_v, stream);
+    randUniform<FLASHMOE_ARCH>(b, N * K, rd(), min_v, max_v, stream);
+    randUniform<FLASHMOE_ARCH>(bias, N, rd(), min_v, max_v, stream);
+    const auto k_ms = gk_run_hip<TileGEMM, Act, threads, sharedSize, AccumType>(a, b, c, bias, M, N, K, blocks, stream);
+
+    printf("%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %.1e, %.1e, n/a, %f, n/a\n",
+        M, N, K, bM, bN, bK, pipeStages, threads, bps, NUM_SMS, blocks, rtol, atol, k_ms);
+
+    CHECK_CUDA(gpuPeekAtLastError());
+    gpuFreeAsync(a, stream);
+    gpuFreeAsync(b, stream);
+    gpuFreeAsync(c, stream);
+    gpuFreeAsync(bias, stream);
+    gpuStreamSynchronize(stream);
+}
+
+__host__ __forceinline__
+void kickStart(const int argc, char** argv) {
+    int MNK = 2;
+    int MNK_max = 8192;
+    float rtol = 2e-2f;
+    float atol = 2e-3f;
+    using Element = __half;
+    using ElementC = Element;
+    using MMA_C = float;
+    printf("M, N, K, bM, bN, bK, pipeStages, threads, blocks/SM, SMs, blocks, rtol, atol, error(%%), Kernel_Time(ms), "
+           "Ref_Time(ms)\n");
+    if (argc > 1) MNK = std::stoi(argv[1]);
+    if (argc > 2) MNK_max = std::stoi(argv[2]);
+    if (argc > 3) rtol = std::stof(argv[3]);
+    if (argc > 4) atol = std::stof(argv[4]);
+    gpuSetDevice(0);
+    gpuStream_t stream;
+    gpuStreamCreate(&stream);
+    for (int i = MNK; i <= MNK_max; i *= 2) {
+        switch (i) {
+        case 2:  driver<2, 2, 2, 1, MMA_C, Element, ElementC>(i, i, i, rtol, atol, stream); break;
+        case 4:  driver<4, 4, 4, 1, MMA_C, Element, ElementC>(i, i, i, rtol, atol, stream); break;
+        case 8:  driver<8, 8, 8, 1, MMA_C, Element, ElementC>(i, i, i, rtol, atol, stream); break;
+        case 16: driver<16, 16, 16, 1, MMA_C, Element, ElementC>(i, i, i, rtol, atol, stream); break;
+        case 32: driver<32, 32, 32, 1, MMA_C, Element, ElementC>(i, i, i, rtol, atol, stream); break;
+        case 64: driver<64, 64, 64, 1, MMA_C, Element, ElementC>(i, i, i, rtol, atol, stream); break;
+        default:
+            {
+                // MI300X: always use pipeStages=1 (no async copy)
+                constexpr int pS = 1;
+                constexpr int bK = cuda::std::is_same_v<Element, double> ? 32 : 64;
+                if (i >= 128 && i <= 2048) {
+                    driver<128, 64, bK, pS, MMA_C, Element, ElementC>(i, i, i, rtol, atol, stream);
+                }
+                else if (i > 2048) {
+                    driver<128, cute::max(64, 64 * (4 / sizeof(Element))), bK, pS, MMA_C, Element, ElementC>(i, i, i, rtol, atol, stream);
+                }
+            }
+        }
+    }
+    gpuStreamDestroy(stream);
+}
+
+int main(const int argc, char** argv) {
+    kickStart(argc, argv);
+}
+#endif // FLASHMOE_PLATFORM_HIP

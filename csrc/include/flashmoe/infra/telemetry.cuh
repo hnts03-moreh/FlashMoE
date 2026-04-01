@@ -12,11 +12,11 @@
 
 #ifndef TELEMETRY_CUH
 #define TELEMETRY_CUH
-#include <nvtx3/nvtx3.hpp>
-namespace flashmoe {
-    struct flashmoeDomain {
-        static constexpr auto const* name{"FlashMoE"};
-    };
-    using flashmoeRange = nvtx3::scoped_range_in<flashmoeDomain>;
-}
+
+// Use the platform profiling abstraction which maps NVTX <-> rocTX
+#include "flashmoe/platform/profiling.h"
+
+// flashmoe::flashmoeDomain and flashmoe::flashmoeRange are now
+// provided by platform/profiling.h for both CUDA and HIP.
+
 #endif //TELEMETRY_CUH

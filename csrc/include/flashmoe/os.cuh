@@ -9,7 +9,12 @@
 #ifndef OS_CUH
 #define OS_CUH
 
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/math_compat.h"
+
+#if !defined(FLASHMOE_PLATFORM_HIP)
 #include <cuda/std/cstddef>
+#endif
 
 #include "context.cuh"
 #include "infra/heap.cuh"

@@ -8,13 +8,32 @@
 #include <stdexcept>
 #include <vector>
 
-#include <cuda_runtime.h>
 #include <cstdio>
-#include <nvshmem.h>
 
-#include <cuda/cmath>
-#include <cuda/memory>
-#include <cute/int_tuple.hpp>
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/runtime.h"
+#include "flashmoe/platform/math_compat.h"
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+#  include <hip/hip_runtime.h>
+#else
+#  include <cuda_runtime.h>
+#  include <cuda/cmath>
+#  include <cuda/memory>
+#endif
+
+// NVSHMEM / ROCSHMEM
+#if defined(FLASHMOE_PLATFORM_HIP)
+#  if __has_include("flashmoe/platform/shmem.h")
+#    include "flashmoe/platform/shmem.h"
+#  endif
+#else
+#  include <nvshmem.h>
+#endif
+
+#if !defined(FLASHMOE_PLATFORM_HIP)
+#  include <cute/int_tuple.hpp>
+#endif
 
 #include "infra/constants.cuh"
 #include "infra/telemetry.cuh"
@@ -42,10 +61,17 @@ do {                                                         \
 __host__ __forceinline__
   auto checkPtrAlignment(const void *const&p, const bool supports32 = false) {
   const auto alignment = supports32 ? 32 : 16;
+#if defined(FLASHMOE_PLATFORM_HIP)
+  if (p == nullptr || (reinterpret_cast<uintptr_t>(p) % alignment) != 0) {
+    printf("Pointer is not %d-byte aligned\n", alignment);
+    std::abort();
+  }
+#else
   if (p == nullptr || !cuda::is_aligned(p, alignment)) {
     printf("Pointer is not %d-byte aligned\n", alignment);
     cuda::std::terminate();
   }
+#endif
 }
 
 namespace flashmoe {
@@ -111,9 +137,12 @@ namespace flashmoe {
                                                   subscriberCount);
   }
 
+#if !defined(FLASHMOE_PLATFORM_HIP)
+  // cuda::barrier is not available on HIP
   __global__ void bI(cuda::barrier<cuda::thread_scope_device> *db, const uint blocks) {
     init(db, blocks);
   }
+#endif
 
   __host__ __forceinline__
   void expertParallelBookkeeping(const int *__restrict__ const&expertToEpRank,
@@ -125,8 +154,8 @@ namespace flashmoe {
 #if defined(FLASHMOE_NVTX) && FLASHMOE_NVTX
     const flashmoeRange range{"FlashMoE::expertParallelBookkeeping"};
 #endif
-    if (nvshmemx_init_status() == NVSHMEM_STATUS_NOT_INITIALIZED) {
-      throw std::runtime_error("nvshmem is not initialized");
+    if (!flashmoe::shmem::is_initialized()) {
+      throw std::runtime_error("shmem is not initialized");
     }
     std::vector<uint> lxIndices(epWorld);
     std::vector<PEL> pelHost(E);
@@ -138,8 +167,8 @@ namespace flashmoe {
     for (uint i = 0; i < E; ++i) {
       const auto epRank = expertToEpRank[i];
       const auto pe = epRankToGlobalRank[epRank];
-      auto *rSheap = static_cast<cuda::std::byte *>(nvshmem_ptr(sHeap, pe));
-      auto *rFlags = static_cast<uint64_t *>(nvshmem_ptr(signals, pe));
+      auto *rSheap = static_cast<cuda::std::byte *>(flashmoe::shmem::shmem_ptr(sHeap, pe));
+      auto *rFlags = static_cast<uint64_t *>(flashmoe::shmem::shmem_ptr(signals, pe));
       const uint lxIdx = lxIndices[epRank]++;
       const auto isRemote = rSheap == nullptr;
 
@@ -187,10 +216,19 @@ namespace flashmoe {
 
   __host__ __forceinline__
   Topology detectTopo() {
-    if (nvshmemx_init_status() == NVSHMEM_STATUS_NOT_INITIALIZED) {
-      throw std::runtime_error("nvshmem is not initialized");
+    if (!flashmoe::shmem::is_initialized()) {
+      throw std::runtime_error("shmem is not initialized");
     }
+#if defined(FLASHMOE_PLATFORM_HIP)
+    // ROCSHMEM does not have NVSHMEM_TEAM_SHARED_INDEX.
+    // On AMD systems with XGMI (Infinity Fabric), all GPUs in a node
+    // typically share the same interconnect domain. We conservatively
+    // assume MIXED topology unless the user overrides.
+    // TODO: implement proper detection via rocshmem_team or rocm-smi query.
+    return Topology::MIXED;
+#else
     return nvshmem_team_n_pes(NVSHMEM_TEAM_SHARED_INDEX) == nvshmem_n_pes() ? Topology::NVLINK_ONLY : Topology::MIXED;
+#endif
   }
 
   __host__ __forceinline__
@@ -224,8 +262,8 @@ namespace flashmoe {
     const auto tilesN0 = cute::ceil_div(args.ffnIntermediateSize, args.bN0);
     const auto tilesN1 = cute::ceil_div(args.tokenDim, args.bN1);
 
-    if (nvshmemx_init_status() == NVSHMEM_STATUS_NOT_INITIALIZED) {
-      throw std::runtime_error("nvshmem is not initialized");
+    if (!flashmoe::shmem::is_initialized()) {
+      throw std::runtime_error("shmem is not initialized");
     }
     const bool elementBytesConditions = cutlass::ispow2(args.elementBytes) &&
                                         (args.elementBytes == 2 || args.elementBytes == 4 || args.elementBytes == 8);
@@ -236,16 +274,16 @@ namespace flashmoe {
     // below ensures the following calloc initializes our signals to the expected value 0
     static_assert(SignalConstants::ground == 0);
     const size_t signalLength = (args.epWorld * args.numLocalExperts) + (args.numExperts * ecTilesM * tilesN1);
-    auto *signals = static_cast<uint64_t *>(nvshmem_calloc(signalLength, sizeof(uint64_t)));
+    auto *signals = static_cast<uint64_t *>(flashmoe::shmem::shmem_calloc(signalLength, sizeof(uint64_t)));
     if (signals == nullptr) {
-      throw std::runtime_error("failed to allocate signals via NVSHMEM");
+      throw std::runtime_error("failed to allocate signals via SHMEM");
     }
     // symmetric heap ~= 4*S*H
     const auto heapLength = args.elementBytes * HEAP_STAGES * HEAP_CELLS * static_cast<size_t>(
                               args.epWorld * args.numLocalExperts) * static_cast<size_t>(roundEC * args.tokenDim);
-    auto *sHeap = static_cast<cuda::std::byte *>(nvshmem_malloc(heapLength));
+    auto *sHeap = static_cast<cuda::std::byte *>(flashmoe::shmem::shmem_malloc(heapLength));
     if (sHeap == nullptr) {
-      throw std::runtime_error("failed to allocate heap via NVSHMEM");
+      throw std::runtime_error("failed to allocate heap via SHMEM");
     }
     const auto supports32 = arch >= 1000;
     checkPtrAlignment(sHeap, supports32);
@@ -468,8 +506,8 @@ namespace flashmoe {
     CHECK_CUDA(cudaFreeAsync(ctx.tileSync, stream));
     CHECK_CUDA(cudaFreeAsync(ctx.statusQueue, stream));
     CHECK_CUDA(cudaStreamSynchronize(stream));
-    nvshmem_free(ctx.symHeap);
-    nvshmem_free(ctx.signals);
+    flashmoe::shmem::shmem_free(ctx.symHeap);
+    flashmoe::shmem::shmem_free(ctx.signals);
     CHECK_CUDA(cudaPeekAtLastError());
   }
 }

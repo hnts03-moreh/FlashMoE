@@ -7,7 +7,28 @@
 
 #ifndef FLASHMOE_RVT_CUH
 #define FLASHMOE_RVT_CUH
+
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/device.h"
+#include "flashmoe/platform/math_compat.h"
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+#include <hip/hip_runtime.h>
+// On HIP, cuda::std::bit_cast is mapped via math_compat.h or we provide a shim
+#include <cstring>
+namespace cuda { namespace std {
+  template <typename To, typename From>
+  __host__ __device__ __forceinline__
+  To bit_cast(const From& src) noexcept {
+    static_assert(sizeof(To) == sizeof(From), "bit_cast requires same size types");
+    To dst;
+    memcpy(&dst, &src, sizeof(To));
+    return dst;
+  }
+} }
+#else
 #include <cuda/std/bit>
+#endif
 
 namespace flashmoe {
   template<int Arch>
@@ -39,12 +60,90 @@ namespace flashmoe {
   struct RedAdd {
     static_assert(VectorWidth >= 1 && VectorWidth <= (RED_MAX_ALIGNMENT / sizeof(Element)) &&
                   cutlass::is_pow2<VectorWidth>::value);
+#if defined(FLASHMOE_PLATFORM_HIP)
+    // ROCm: map all arch values to the generic atomicAdd path
+    // AMD CDNA does not have PTX-like global reduction instructions;
+    // we use atomicAdd which is well-optimized on MI300X.
+    using VectorWidth_ = cute::Int<1>;
+#else
     static_assert(Arch == 700 || Arch == 800 || Arch == 900);
+#endif
     static_assert(cuda::std::is_same_v<Element, double> || cuda::std::is_same_v<Element, float> ||
                   cuda::std::is_same_v<Element, __half> || cuda::std::is_same_v<Element, __half2> ||
                   cuda::std::is_same_v<Element, __nv_bfloat16> || cuda::std::is_same_v<Element, __nv_bfloat162>);
+#if !defined(FLASHMOE_PLATFORM_HIP)
     static_assert(!cuda::std::is_same_v<Element, __nv_bfloat16> || Arch >= 800, "bfloat16 requires at least sm_80");
+#endif
   };
+
+// -------------------------------------------------------
+// HIP: Generic atomicAdd-based reduction for all types
+// -------------------------------------------------------
+#if defined(FLASHMOE_PLATFORM_HIP)
+
+  // Generic RedAdd for HIP -- uses atomicAdd which supports fp16/bf16/fp32/fp64 on MI300X
+  // VectorWidth is always 1 on HIP (no vectorized global reductions)
+  template<int Arch, int MaxVectorWidth>
+  struct RedAdd<Arch, double, MaxVectorWidth> {
+    using VectorWidth = cute::Int<1>;
+    template<typename T>
+    __device__ __forceinline__
+    void operator()(double *__restrict__ const&addr, const T &v) const {
+      atomicAdd(addr, v[0]);
+    }
+  };
+
+  template<int Arch, int MaxVectorWidth>
+  struct RedAdd<Arch, float, MaxVectorWidth> {
+    using VectorWidth = cute::Int<1>;
+    template<typename T>
+    __device__ __forceinline__
+    void operator()(float *__restrict__ const&addr, const T &v) const {
+      atomicAdd(addr, v[0]);
+    }
+  };
+
+  template<int Arch, int MaxVectorWidth>
+  struct RedAdd<Arch, __half, MaxVectorWidth> {
+    using VectorWidth = cute::Int<1>;
+    template<typename T>
+    __device__ __forceinline__
+    void operator()(__half *__restrict__ const&addr, const T &v) const {
+      atomicAdd(addr, v[0]);
+    }
+  };
+
+  template<int Arch, int MaxVectorWidth>
+  struct RedAdd<Arch, __half2, MaxVectorWidth> {
+    using VectorWidth = cute::Int<1>;
+    template<typename T>
+    __device__ __forceinline__
+    void operator()(__half2 *__restrict__ const&addr, const T &v) const {
+      atomicAdd(addr, v[0]);
+    }
+  };
+
+  template<int Arch, int MaxVectorWidth>
+  struct RedAdd<Arch, __nv_bfloat16, MaxVectorWidth> {
+    using VectorWidth = cute::Int<1>;
+    template<typename T>
+    __device__ __forceinline__
+    void operator()(__nv_bfloat16 *__restrict__ const&addr, const T &v) const {
+      atomicAdd(addr, v[0]);
+    }
+  };
+
+  template<int Arch, int MaxVectorWidth>
+  struct RedAdd<Arch, __nv_bfloat162, MaxVectorWidth> {
+    using VectorWidth = cute::Int<1>;
+    template<typename T>
+    __device__ __forceinline__
+    void operator()(__nv_bfloat162 *__restrict__ const&addr, const T &v) const {
+      atomicAdd(addr, v[0]);
+    }
+  };
+
+#else // CUDA -- original PTX inline asm implementations
 
   template<int MaxVectorWidth>
   struct RedAdd<700, double, MaxVectorWidth> {
@@ -99,7 +198,6 @@ namespace flashmoe {
       requires(cuda::std::is_same_v<typename T::value_type, __half2>)
     __device__ __forceinline__
     void operator()(__half2 *__restrict__ const&addr, const T &v) const {
-      // __half2 is packed 32-bit => use f16x2
       auto v0 = cuda::std::bit_cast<uint32_t>(static_cast<__half2_raw>(v[0]));
       asm volatile("red.global.add.noftz.f16x2 [%0], %1;"
         :
@@ -376,5 +474,8 @@ namespace flashmoe {
       }
     }
   };
+
+#endif // FLASHMOE_PLATFORM_HIP
+
 }
 #endif //FLASHMOE_RVT_CUH

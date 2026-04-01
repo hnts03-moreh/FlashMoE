@@ -14,8 +14,26 @@
 #define CSRC_DEBUG_CUH
 
 #include <cstdio>
-#if !defined(CHECK_CUDA)
-#  define CHECK_CUDA(e)                                      \
+#include "../include/flashmoe/platform/runtime.h"
+
+// CHECK_CUDA is now provided by platform/runtime.h as an alias for CHECK_GPU.
+// Legacy standalone definition kept only if the platform header was not included.
+#if !defined(CHECK_CUDA) && !defined(CHECK_GPU)
+#  if defined(FLASHMOE_PLATFORM_HIP)
+#    define CHECK_CUDA(e)                                    \
+do {                                                         \
+    hipError_t code = (e);                                   \
+    if (code != hipSuccess) {                                \
+        fprintf(stderr, "<%s:%d> %s:\n    %s: %s\n",         \
+            __FILE__, __LINE__, #e,                          \
+            hipGetErrorName(code),                           \
+            hipGetErrorString(code));                        \
+        fflush(stderr);                                      \
+        exit(1);                                             \
+    }                                                        \
+} while (0)
+#  else
+#    define CHECK_CUDA(e)                                    \
 do {                                                         \
     cudaError_t code = (e);                                  \
     if (code != cudaSuccess) {                               \
@@ -27,6 +45,7 @@ do {                                                         \
         exit(1);                                             \
     }                                                        \
 } while (0)
+#  endif
 #endif
 
 #define FLASHMOE_ASSERT(predicate, errmsg)                    \

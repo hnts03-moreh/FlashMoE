@@ -4,6 +4,10 @@
 
 #ifndef FLASHMOE_PACKED_CUH
 #define FLASHMOE_PACKED_CUH
+
+#include "flashmoe/platform/platform.h"
+#include "flashmoe/platform/device.h"
+
 namespace flashmoe {
     struct __align__(8) TPS {
         uint32_t tokenIdx;
