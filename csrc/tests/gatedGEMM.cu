@@ -5,17 +5,15 @@
 
 #include <random>
 
-#if defined(FLASHMOE_PLATFORM_HIP)
-#include <rocblasdx/rocblasdx.hpp>
-#include "../include/flashmoe/infra/activation.cuh"
-#else
-#include <cutlass/epilogue/thread/activation.h>
-#include <cublasdx.hpp>
-#endif
-
 #include "common.cuh"
 #include "debug.cuh"
 #include "../include/flashmoe/tile.cuh"
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+#include "../include/flashmoe/infra/activation.cuh"
+#else
+#include <cutlass/epilogue/thread/activation.h>
+#endif
 
 template<typename TileGEMM, typename Activation, typename ElementC, typename Element>
 __device__ __forceinline__

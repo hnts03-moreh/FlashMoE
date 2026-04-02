@@ -20,11 +20,13 @@
 
 #if defined(FLASHMOE_PLATFORM_HIP)
 
-// Shuffle — map CUDA's 4-arg __shfl_sync to HIP's 3-arg __shfl
-#define __shfl_sync(mask, val, srcLane, width)      __shfl((val), (srcLane), (width))
-#define __shfl_up_sync(mask, val, delta, width)     __shfl_up((val), (delta), (width))
-#define __shfl_down_sync(mask, val, delta, width)   __shfl_down((val), (delta), (width))
-#define __shfl_xor_sync(mask, val, laneMask, width) __shfl_xor((val), (laneMask), (width))
+// Shuffle — map CUDA's __shfl_sync to HIP's __shfl
+// CUDA supports both 3-arg (mask, val, src) and 4-arg (mask, val, src, width) forms.
+// We use variadic macros to handle both.
+#define __shfl_sync(mask, val, srcLane, ...)      __shfl((val), (srcLane) __VA_OPT__(,) __VA_ARGS__)
+#define __shfl_up_sync(mask, val, delta, ...)     __shfl_up((val), (delta) __VA_OPT__(,) __VA_ARGS__)
+#define __shfl_down_sync(mask, val, delta, ...)   __shfl_down((val), (delta) __VA_OPT__(,) __VA_ARGS__)
+#define __shfl_xor_sync(mask, val, laneMask, ...) __shfl_xor((val), (laneMask) __VA_OPT__(,) __VA_ARGS__)
 
 // -------------------------------------------------------
 // Ballot

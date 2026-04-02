@@ -42,7 +42,7 @@ namespace flashmoe {
   template<
     unsigned int T
   >
-  __device__ __forceinline__
+  __host__ __device__ __forceinline__
   constexpr uint nSI(const unsigned int &numBits) {
     constexpr unsigned int integerBitWidth = 32U;
     constexpr auto width = integerBitWidth * T;

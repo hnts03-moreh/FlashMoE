@@ -15,19 +15,7 @@
 #include "infra/task.cuh"
 #include "infra/tq.cuh"
 
-#if defined(FLASHMOE_PLATFORM_HIP)
-// HIP does not have cuda::fast_mod_div from CCCL; provide a minimal shim
-namespace cuda {
-  template <typename T>
-  struct fast_mod_div {
-    T divisor_;
-    __host__ __device__ explicit fast_mod_div(T d = 1) : divisor_(d) {}
-    __host__ __device__ friend T operator%(T a, const fast_mod_div& fmd) {
-      return a % fmd.divisor_;
-    }
-  };
-}
-#endif
+// On HIP, cuda::fast_mod_div is provided by math_compat.h
 
 namespace flashmoe {
   struct Context {

@@ -171,14 +171,22 @@ namespace flashmoe
   template <>
   struct Converter<__nv_bfloat16, float> {
     __device__ auto operator()(const float& x) const {
+#if defined(FLASHMOE_PLATFORM_HIP)
+      return hip_bfloat16(x);
+#else
       return __float2bfloat16(x);
+#endif
     }
   };
 
   template <>
   struct Converter<float, __nv_bfloat16> {
     __device__ auto operator()(const __nv_bfloat16& x) const {
+#if defined(FLASHMOE_PLATFORM_HIP)
+      return static_cast<float>(x);
+#else
       return __bfloat162float(x);
+#endif
     }
   };
 
@@ -290,7 +298,89 @@ namespace flashmoe::tile
 #endif
   }
 
-#if !defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_PLATFORM_HIP)
+  // HIP tile accessors — simplified versions without deep CuTe tensor operations
+  // GmemTileView: a 2D view into a tile of a larger matrix
+  template <typename Element, int TileR, int TileC, flashmoe_blas::arrangement ar>
+  struct GmemTileView {
+      Element* ptr_;
+      int global_stride_;  // stride of the full matrix (nCol for row-major, nRow for col-major)
+
+      __device__ __forceinline__
+      Element& operator()(int row, int col) {
+          if constexpr (ar == flashmoe_blas::row_major)
+              return ptr_[row * global_stride_ + col];
+          else
+              return ptr_[col * global_stride_ + row];
+      }
+
+      __device__ __forceinline__
+      const Element& operator()(int row, int col) const {
+          if constexpr (ar == flashmoe_blas::row_major)
+              return ptr_[row * global_stride_ + col];
+          else
+              return ptr_[col * global_stride_ + row];
+      }
+
+      // Flat indexing (row-major within tile)
+      __device__ __forceinline__
+      Element& operator()(int flat) {
+          int row = flat / TileC;
+          int col = flat % TileC;
+          return (*this)(row, col);
+      }
+
+      __device__ __forceinline__
+      const Element& operator()(int flat) const {
+          int row = flat / TileC;
+          int col = flat % TileC;
+          return (*this)(row, col);
+      }
+
+      static constexpr int size() { return TileR * TileC; }
+
+      using layout_type = typename rocblasdx::SuggestSmemLayout<ar, TileR, TileC, Element>::type;
+      static constexpr layout_type layout() { return {}; }
+  };
+
+  template <int tRow, int tCol, int ar_int, typename Element, typename TileCoord>
+  __device__ __forceinline__
+  auto get(const Element* __restrict__ const& p, const int& nRow, const int& nCol,
+                     const TileCoord& tileCoord) {
+      constexpr auto ar = static_cast<flashmoe_blas::arrangement>(ar_int);
+      const int tileRow = cute::get<0>(tileCoord);
+      const int tileCol = cute::get<1>(tileCoord);
+      const Element* base = (ar == flashmoe_blas::row_major)
+          ? p + tileRow * tRow * nCol + tileCol * tCol
+          : p + tileCol * tCol * nRow + tileRow * tRow;
+      const int stride = (ar == flashmoe_blas::row_major) ? nCol : nRow;
+      return GmemTileView<const Element, tRow, tCol, ar>{const_cast<const Element*>(base), stride};
+  }
+
+  template <int tRow, int tCol, int ar_int, typename Element, typename TileCoord>
+  __device__ __forceinline__
+  auto getC(Element* __restrict__ const& p, const int& nRow, const int& nCol, const TileCoord& tileCoord) {
+      constexpr auto ar = static_cast<flashmoe_blas::arrangement>(ar_int);
+      const int tileRow = cute::get<0>(tileCoord);
+      const int tileCol = cute::get<1>(tileCoord);
+      Element* base = (ar == flashmoe_blas::row_major)
+          ? p + tileRow * tRow * nCol + tileCol * tCol
+          : p + tileCol * tCol * nRow + tileRow * tRow;
+      const int stride = (ar == flashmoe_blas::row_major) ? nCol : nRow;
+      return GmemTileView<Element, tRow, tCol, ar>{base, stride};
+  }
+
+  template <int bM, int bN, typename Element, typename TileCoord>
+  __device__ __forceinline__
+  auto getBias(const Element* __restrict__ const& bias, const int& M, const int& N,
+                         const TileCoord& tileCoord) {
+      // broadcast from {1, N} -> {M, N}: stride for rows is 0
+      const int tileCol = cute::get<1>(tileCoord);
+      const Element* base = bias + tileCol * bN;
+      // For bias broadcast, row stride is 0 — each row reads the same data
+      return GmemTileView<const Element, bM, bN, flashmoe_blas::row_major>{const_cast<const Element*>(base), 0};
+  }
+#else
   // These tile accessors use deep CuTe tensor operations only available on CUDA
   template <int tRow, int tCol, flashmoe_blas::arrangement ar, typename Element, typename TileCoord>
   __device__ __forceinline__
@@ -334,7 +424,7 @@ namespace flashmoe::tile
   void update_buffer(Tensor& tensor, Element* __restrict__ const& base_ptr) {
     tensor.data() = base_ptr + (stage * offset);
   }
-#endif // !FLASHMOE_PLATFORM_HIP
+#endif
 
   template <flashmoe_blas::arrangement ar, int bM, int bK>
   constexpr int ldA = ar == flashmoe_blas::row_major ? bK : bM;

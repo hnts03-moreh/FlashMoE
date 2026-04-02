@@ -14,18 +14,7 @@
 
 #if defined(FLASHMOE_PLATFORM_HIP)
 #include <hip/hip_runtime.h>
-// On HIP, cuda::std::bit_cast is mapped via math_compat.h or we provide a shim
-#include <cstring>
-namespace cuda { namespace std {
-  template <typename To, typename From>
-  __host__ __device__ __forceinline__
-  To bit_cast(const From& src) noexcept {
-    static_assert(sizeof(To) == sizeof(From), "bit_cast requires same size types");
-    To dst;
-    memcpy(&dst, &src, sizeof(To));
-    return dst;
-  }
-} }
+// On HIP, cuda::std::bit_cast is provided by math_compat.h
 #else
 #include <cuda/std/bit>
 #endif
@@ -103,13 +92,34 @@ namespace flashmoe {
     }
   };
 
+  // CAS-based atomicAdd for __half on HIP (ROCm 7.0 lacks native half atomicAdd)
+  __device__ __forceinline__
+  void hip_atomicAdd_half(__half* addr, __half val) {
+      // Pack __half into the appropriate 16-bit slot of a 32-bit word
+      unsigned int* base = reinterpret_cast<unsigned int*>(
+          reinterpret_cast<uintptr_t>(addr) & ~uintptr_t(3));
+      unsigned int shift = (reinterpret_cast<uintptr_t>(addr) & 2) ? 16 : 0;
+      unsigned int old_val = *base;
+      unsigned int assumed;
+      do {
+          assumed = old_val;
+          unsigned short old_h = static_cast<unsigned short>((assumed >> shift) & 0xFFFF);
+          __half old_half = *reinterpret_cast<__half*>(&old_h);
+          __half new_half = __hadd(old_half, val);
+          unsigned short new_h = *reinterpret_cast<unsigned short*>(&new_half);
+          unsigned int new_val = (assumed & ~(0xFFFFu << shift)) |
+                                 (static_cast<unsigned int>(new_h) << shift);
+          old_val = atomicCAS(base, assumed, new_val);
+      } while (old_val != assumed);
+  }
+
   template<int Arch, int MaxVectorWidth>
   struct RedAdd<Arch, __half, MaxVectorWidth> {
     using VectorWidth = cute::Int<1>;
     template<typename T>
     __device__ __forceinline__
     void operator()(__half *__restrict__ const&addr, const T &v) const {
-      atomicAdd(addr, v[0]);
+      hip_atomicAdd_half(addr, v[0]);
     }
   };
 
@@ -119,7 +129,10 @@ namespace flashmoe {
     template<typename T>
     __device__ __forceinline__
     void operator()(__half2 *__restrict__ const&addr, const T &v) const {
-      atomicAdd(addr, v[0]);
+      __half* hp = reinterpret_cast<__half*>(addr);
+      __half2 val = v[0];
+      hip_atomicAdd_half(hp,     __low2half(val));
+      hip_atomicAdd_half(hp + 1, __high2half(val));
     }
   };
 
@@ -129,7 +142,25 @@ namespace flashmoe {
     template<typename T>
     __device__ __forceinline__
     void operator()(__nv_bfloat16 *__restrict__ const&addr, const T &v) const {
-      atomicAdd(addr, v[0]);
+      // HIP doesn't have native atomicAdd for bf16; use CAS-based approach via float
+      float* fp = reinterpret_cast<float*>(reinterpret_cast<uintptr_t>(addr) & ~uintptr_t(3));
+      unsigned int offset = (reinterpret_cast<uintptr_t>(addr) & 3) ? 16 : 0;
+      float old_val = *fp;
+      float new_val;
+      unsigned int* ui = reinterpret_cast<unsigned int*>(fp);
+      unsigned int old_bits, new_bits;
+      do {
+        old_bits = __float_as_uint(old_val);
+        // Extract the bf16, add, store back
+        unsigned short old_bf16 = (old_bits >> offset) & 0xFFFF;
+        hip_bfloat16 old_hb; memcpy(&old_hb, &old_bf16, 2);
+        float sum = static_cast<float>(old_hb) + static_cast<float>(v[0]);
+        hip_bfloat16 new_hb(sum);
+        unsigned short new_bf16; memcpy(&new_bf16, &new_hb, 2);
+        new_bits = (old_bits & ~(0xFFFFu << offset)) | (static_cast<unsigned int>(new_bf16) << offset);
+        new_val = __uint_as_float(new_bits);
+        old_val = __uint_as_float(atomicCAS(ui, old_bits, new_bits));
+      } while (__float_as_uint(old_val) != old_bits);
     }
   };
 
@@ -139,7 +170,19 @@ namespace flashmoe {
     template<typename T>
     __device__ __forceinline__
     void operator()(__nv_bfloat162 *__restrict__ const&addr, const T &v) const {
-      atomicAdd(addr, v[0]);
+      // Decompose bf162 atomicAdd into two scalar bf16 additions
+      __nv_bfloat16* bp = reinterpret_cast<__nv_bfloat16*>(addr);
+      __nv_bfloat162 val = v[0];
+      // Extract low and high halves
+      __nv_bfloat16 lo, hi;
+      memcpy(&lo, reinterpret_cast<const char*>(&val), 2);
+      memcpy(&hi, reinterpret_cast<const char*>(&val) + 2, 2);
+      RedAdd<Arch, __nv_bfloat16, 1> scalar_op;
+      cutlass::AlignedArray<__nv_bfloat16, 1, sizeof(__nv_bfloat16)> lo_arr, hi_arr;
+      lo_arr[0] = lo;
+      hi_arr[0] = hi;
+      scalar_op(bp, lo_arr);
+      scalar_op(bp + 1, hi_arr);
     }
   };
 

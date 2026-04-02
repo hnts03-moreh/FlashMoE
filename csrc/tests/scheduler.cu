@@ -43,7 +43,7 @@ __device__ __forceinline__ void jitter_spin(uint32_t seed) {
 struct __align__(8) MockTask {
     uint32_t v;
     uint16_t parentIdx;
-    uint8_t reproduce = 0;
+    uint8_t reproduce;
     uint8_t consumed;
 };
 // --- roles ---

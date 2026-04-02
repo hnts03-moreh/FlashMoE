@@ -44,16 +44,16 @@ struct atomic_ref {
         return __atomic_load_n(ptr_, __ATOMIC_SEQ_CST);
     }
 
-    __device__ void store(T val, int /* memory_order */ = 0) {
+    __device__ void store(T val, int /* memory_order */ = 0) const {
         __atomic_store_n(ptr_, val, __ATOMIC_SEQ_CST);
     }
 
-    __device__ T fetch_add(T val, int /* memory_order */ = 0) {
+    __device__ T fetch_add(T val, int /* memory_order */ = 0) const {
         return __atomic_fetch_add(ptr_, val, __ATOMIC_SEQ_CST);
     }
 
     __device__ bool compare_exchange_strong(T& expected, T desired,
-                                            int /* memory_order */ = 0) {
+                                            int /* memory_order */ = 0) const {
         return __atomic_compare_exchange_n(ptr_, &expected, desired,
                                            false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
     }

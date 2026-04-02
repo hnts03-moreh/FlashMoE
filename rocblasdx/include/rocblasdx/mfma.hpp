@@ -46,6 +46,9 @@ namespace mfma {
 //   - CRegsPerThread: number of C-output registers per thread
 
 // FP16 -> FP32 accum, 32x32xK=8
+// NOTE: __half is a class type on AMD HIP and cannot be used with ext_vector_type.
+// The fp16 MFMA intrinsics expect vectors of _Float16, so we use _Float16 vectors
+// and reinterpret_cast when loading half data.
 struct MfmaF32_32x32x8_F16 {
     using AType = __half;
     using BType = __half;
@@ -56,8 +59,8 @@ struct MfmaF32_32x32x8_F16 {
     static constexpr int K = 8;
     static constexpr int c_per_thread = 16;  // each thread holds 16 fp32 accum regs
 
-    using AVec = __half __attribute__((ext_vector_type(4)));
-    using BVec = __half __attribute__((ext_vector_type(4)));
+    using AVec = _Float16 __attribute__((ext_vector_type(4)));
+    using BVec = _Float16 __attribute__((ext_vector_type(4)));
     using CVec = float __attribute__((ext_vector_type(16)));
 
     __device__ __forceinline__
@@ -77,8 +80,8 @@ struct MfmaF32_16x16x16_F16 {
     static constexpr int K = 16;
     static constexpr int c_per_thread = 4;
 
-    using AVec = __half __attribute__((ext_vector_type(4)));
-    using BVec = __half __attribute__((ext_vector_type(4)));
+    using AVec = _Float16 __attribute__((ext_vector_type(4)));
+    using BVec = _Float16 __attribute__((ext_vector_type(4)));
     using CVec = float __attribute__((ext_vector_type(4)));
 
     __device__ __forceinline__
@@ -88,6 +91,9 @@ struct MfmaF32_16x16x16_F16 {
 };
 
 // BF16 -> FP32 accum, 32x32xK=8
+// NOTE: hip_bfloat16 is a class type and cannot be used with ext_vector_type.
+// The bf16_1k MFMA intrinsics expect vectors of short, so we use short vectors
+// and reinterpret_cast when loading bf16 data.
 struct MfmaF32_32x32x8_BF16 {
     using AType = hip_bfloat16;
     using BType = hip_bfloat16;
@@ -98,8 +104,8 @@ struct MfmaF32_32x32x8_BF16 {
     static constexpr int K = 8;
     static constexpr int c_per_thread = 16;
 
-    using AVec = hip_bfloat16 __attribute__((ext_vector_type(4)));
-    using BVec = hip_bfloat16 __attribute__((ext_vector_type(4)));
+    using AVec = short __attribute__((ext_vector_type(4)));
+    using BVec = short __attribute__((ext_vector_type(4)));
     using CVec = float __attribute__((ext_vector_type(16)));
 
     __device__ __forceinline__
@@ -119,8 +125,8 @@ struct MfmaF32_16x16x16_BF16 {
     static constexpr int K = 16;
     static constexpr int c_per_thread = 4;
 
-    using AVec = hip_bfloat16 __attribute__((ext_vector_type(4)));
-    using BVec = hip_bfloat16 __attribute__((ext_vector_type(4)));
+    using AVec = short __attribute__((ext_vector_type(4)));
+    using BVec = short __attribute__((ext_vector_type(4)));
     using CVec = float __attribute__((ext_vector_type(4)));
 
     __device__ __forceinline__

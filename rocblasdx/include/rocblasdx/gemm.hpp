@@ -49,14 +49,24 @@ struct SmemTensor {
     __device__ __forceinline__
     SmemTensor(Element* p) : ptr(p) {}
 
+    // 2D indexing
     __device__ __forceinline__
     Element& operator()(int row, int col) { return ptr[row * Stride + col]; }
 
     __device__ __forceinline__
     const Element& operator()(int row, int col) const { return ptr[row * Stride + col]; }
 
+    // Flat indexing (for copy utilities)
+    __device__ __forceinline__
+    Element& operator()(int flat) { return ptr[flat]; }
+
+    __device__ __forceinline__
+    const Element& operator()(int flat) const { return ptr[flat]; }
+
     __device__ __forceinline__
     Element*& data() { return ptr; }
+
+    static constexpr int size() { return Rows * Cols; }
 
     using layout_type = SmemLayout<Rows, Cols, Stride>;
     static constexpr layout_type layout() { return {}; }
@@ -71,7 +81,21 @@ auto make_tensor(Element* ptr, SmemLayout<R, C, S>) {
     return SmemTensor<Element, R, C, S>{ptr};
 }
 
-// make_tensor — CuTe layout passthrough (for gate.cuh patterns)
+// size() overload for SmemTensor — enables rocblasdx::size(tensor)
+template <typename Element, int R, int C, int S>
+__device__ __host__ __forceinline__
+constexpr int size(const SmemTensor<Element, R, C, S>&) {
+    return R * C;
+}
+
+// Generic size() for types with .size() member
+template <typename T>
+__device__ __host__ __forceinline__
+auto size(const T& t) -> decltype(t.size()) { return t.size(); }
+
+// CuTe layout passthrough overloads — only available when math_compat.h (cute:: namespace) is included
+#if defined(FLASHMOE_USE_MATH_COMPAT)
+// make_tensor — raw pointer + CuTe Layout -> wrap in smem_ptr and forward
 template <typename Element, typename CuteLayout>
 __device__ __forceinline__
 auto make_tensor(Element* ptr, CuteLayout layout)
@@ -88,6 +112,7 @@ auto make_tensor(SmemPtr ptr, CuteLayout layout)
 {
     return cute::make_tensor(ptr, layout);
 }
+#endif
 
 // =====================================================================
 // copy_wait — synchronize outstanding copies
@@ -590,14 +615,14 @@ void copy(const SmemTensor<SrcElement, R, C, S>& src,
     }
 }
 
-// For CuTe tensor types — forward to cute::copy pattern
+// For CuTe tensor types — forward to cooperative copy pattern
 template <typename BLAS, int Align, typename SrcTensor, typename DstTensor>
 __device__ __forceinline__
 void copy(const SrcTensor& src, DstTensor& dst) {
-    // CuTe tensors: use cooperative thread-strided copy
+    // Cooperative thread-strided copy
     constexpr int threads = BLAS::max_threads_per_block;
     const int tid = threadIdx.x;
-    const int total = cute::size(src);
+    const int total = rocblasdx::size(src);
     const int per = (total + threads - 1) / threads;
     for (int i = 0; i < per; ++i) {
         int flat = tid + i * threads;
@@ -610,7 +635,7 @@ void copy(const SrcTensor& src, DstTensor& dst) {
 template <int Threads, int Align, typename SrcTensor, typename DstTensor>
 __device__ __forceinline__
 void copy(int tid, const SrcTensor& src, DstTensor& dst) {
-    const int total = cute::size(src);
+    const int total = rocblasdx::size(src);
     for (int flat = tid; flat < total; flat += Threads) {
         dst(flat) = src(flat);
     }

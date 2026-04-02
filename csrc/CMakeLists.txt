@@ -323,11 +323,10 @@ else()
 # -------------------------------------------------------
 
 function(flash_target_test tgt)
+    target_include_directories(${tgt} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
     target_link_libraries(${tgt} PRIVATE hip::device atomic)
     target_link_libraries(${tgt} PRIVATE flashmoe_warnings)
-    target_compile_options(${tgt} PRIVATE
-            $<$<COMPILE_LANGUAGE:HIP>:--offload-arch=${CMAKE_HIP_ARCHITECTURES}>
-    )
+    # Note: --offload-arch is set automatically by CMake via CMAKE_HIP_ARCHITECTURES
     target_compile_options(${tgt} PRIVATE
             $<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:CXX>>:-O0;-g>
             $<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:HIP>>:-O0;-g;-ggdb>
@@ -342,14 +341,13 @@ function(flash_target_test tgt)
 endfunction()
 
 function(flash_target_common tgt)
+    target_include_directories(${tgt} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
     target_link_libraries(${tgt} PRIVATE hip::device atomic)
     target_link_libraries(${tgt} PRIVATE flashmoe_warnings)
     if(ROCTX_LIB)
         target_link_libraries(${tgt} PRIVATE ${ROCTX_LIB})
     endif()
-    target_compile_options(${tgt} PRIVATE
-            $<$<COMPILE_LANGUAGE:HIP>:--offload-arch=${CMAKE_HIP_ARCHITECTURES}>
-    )
+    # Note: --offload-arch is set automatically by CMake via CMAKE_HIP_ARCHITECTURES
     target_compile_options(${tgt} PRIVATE
             $<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:CXX>>:-O0;-g>
             $<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:HIP>>:-O0;-g;-ggdb>
@@ -365,13 +363,14 @@ function(flash_target_common tgt)
 endfunction()
 
 function(flash_target_lto tgt)
+    target_include_directories(${tgt} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
     target_link_libraries(${tgt} PRIVATE hip::device atomic)
     target_link_libraries(${tgt} PRIVATE flashmoe_warnings)
     if(ROCTX_LIB)
         target_link_libraries(${tgt} PRIVATE ${ROCTX_LIB})
     endif()
+    # Note: --offload-arch is set automatically by CMake via CMAKE_HIP_ARCHITECTURES
     target_compile_options(${tgt} PRIVATE
-            $<$<COMPILE_LANGUAGE:HIP>:--offload-arch=${CMAKE_HIP_ARCHITECTURES}>
             $<$<COMPILE_LANGUAGE:HIP>:-fgpu-rdc>
     )
     target_link_options(${tgt} PRIVATE -fgpu-rdc)

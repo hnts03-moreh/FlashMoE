@@ -50,8 +50,10 @@
 #if defined(FLASHMOE_PLATFORM_HIP)
 #  include <hip/hip_fp16.h>
 #  include <hip/hip_bfloat16.h>
+#  include <hip/amd_detail/amd_hip_bf16.h>
 // HIP uses __half and hip_bfloat16; alias for compatibility
 using __nv_bfloat16 = hip_bfloat16;
+using __nv_bfloat162 = __hip_bfloat162;
 #else
 #  include <cuda_fp16.h>
 #  include <cuda_bf16.h>

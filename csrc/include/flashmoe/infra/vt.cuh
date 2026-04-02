@@ -11,20 +11,7 @@
 #include "flashmoe/platform/platform.h"
 #include "flashmoe/platform/math_compat.h"
 
-#if defined(FLASHMOE_PLATFORM_HIP)
-// cutlass::is_pow2 shim for HIP
-namespace cutlass {
-  template <int N>
-  struct is_pow2 {
-    static constexpr bool value = (N > 0) && ((N & (N - 1)) == 0);
-  };
-  // Also provide ispow2 as a function for bootstrap.cuh
-  __host__ __device__ __forceinline__
-  constexpr bool ispow2(size_t n) {
-    return (n > 0) && ((n & (n - 1)) == 0);
-  }
-}
-#endif
+// On HIP, cutlass::is_pow2 and cutlass::ispow2 are provided by math_compat.h
 
 #include "constants.cuh"
 

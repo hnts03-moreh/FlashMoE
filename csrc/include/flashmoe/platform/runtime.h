@@ -77,7 +77,12 @@ using gpuError_t      = hipError_t;
 #define gpuDevAttrComputeCapabilityMinor      hipDeviceAttributeComputeCapabilityMinor
 
 // Kernel launch attributes
-#define gpuFuncSetAttribute      hipFuncSetAttribute
+// HIP's hipFuncSetAttribute takes const void*, but kernel function pointers
+// need to be cast. Provide a template wrapper.
+template <typename Func>
+inline hipError_t gpuFuncSetAttribute(Func func, hipFuncAttribute attr, int value) {
+    return hipFuncSetAttribute(reinterpret_cast<const void*>(func), attr, value);
+}
 #define gpuFuncAttributeMaxDynamicSharedMemorySize \
         hipFuncAttributeMaxDynamicSharedMemorySize
 #define gpuOccupancyMaxActiveBlocksPerMultiprocessor \

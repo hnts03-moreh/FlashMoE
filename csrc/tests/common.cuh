@@ -47,7 +47,11 @@ struct Converter<__half, float> {
 template <>
 struct Converter<__nv_bfloat16, float> {
   __device__ auto operator()(const float& x) const {
+#if defined(FLASHMOE_PLATFORM_HIP)
+    return hip_bfloat16(x);
+#else
     return __float2bfloat16(x);
+#endif
   }
 };
 

@@ -13,17 +13,15 @@
 #include <stdexcept>
 #include <string>
 
-#if defined(FLASHMOE_PLATFORM_HIP)
-#include <rocblasdx/rocblasdx.hpp>
-#include "../include/flashmoe/infra/activation.cuh"
-#else
-#include <cutlass/epilogue/thread/activation.h>
-#include <cublasdx.hpp>
-#endif
-
 #include "common.cuh"
 #include "debug.cuh"
 #include "../include/flashmoe/tile.cuh"
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+#include "../include/flashmoe/infra/activation.cuh"
+#else
+#include <cutlass/epilogue/thread/activation.h>
+#endif
 
 template<typename TileGEMM, typename Activation, typename ElementC, typename Element>
 __device__ __forceinline__
@@ -52,7 +50,7 @@ void gemmMainloop(void* __restrict__ const& workspace,
     constexpr flashmoe::Converter<ElementC, AccumType> storeConv{};
     const auto c_frag = accumulator.get_results();
     constexpr int accum_size = flashmoe_blas::size(c_frag);
-    cute::for_each(cute::make_int_sequence<accum_size>{}, [&c_frag, &d_frag](auto i) {
+    cute::for_each(cute::make_int_sequence<accum_size>{}, [&](auto i) {
         d_frag(i) = storeConv(act(c_frag(i) + loadConv(d_frag(i))));
     });
     auto gC = flashmoe::tile::getC<BM{}, BN{}, flashmoe_blas::arrangement_of_v_c<BLAS>>(c, M, N,
