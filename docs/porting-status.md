@@ -187,11 +187,17 @@ ROCSHMEM does not have a shared-memory team concept. The `detectTopo()` function
 
 ## Roadmap
 
+### Completed (Post-QA)
+
+- **HIP build verified.** All 8 test targets (`testScheduler`, `testGEMM`, `gemmMNK`, `testGatedGEMM`, `testGate`, `testCombine`, `testFlashMoE`, `playground`) compile successfully on MI300X with ROCm 7.0 / hipcc Clang 20.
+- **rocshmem_wg_init() wrappers added** to `moe.cuh` forward kernel via `shmem.h` device API.
+- **experimental/topo.cuh** resolved -- topology discovery disabled on HIP with safe `MIXED` default.
+
 ### Near-Term
 
 1. **MFMA correctness validation.** Run the ported GEMM kernels on MI300X hardware and compare results against rocBLAS host-side reference. Verify MFMA thread-data mapping end-to-end.
 
-2. **ROCSHMEM integration testing.** Build with ROCSHMEM, add `wg_init()` calls, and enable the E2E distributed test.
+2. **ROCSHMEM integration testing.** Build with ROCSHMEM and enable the E2E distributed test.
 
 3. **Numerical verification pipeline.** Replace MatX-based reference with PyTorch ROCm or rocBLAS for automated correctness checks.
 
