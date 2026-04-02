@@ -177,20 +177,19 @@ __host__ __device__ constexpr auto get(const T& t) {
 
 // ceil_div
 template <typename T, typename U>
-__host__ __device__ __forceinline__
 constexpr auto ceil_div(T a, U b) {
     return (a + b - 1) / b;
 }
 
-// max / min
+// max / min — plain constexpr (HIP/Clang makes constexpr functions
+// implicitly available on device; __host__ __device__ would prevent
+// use in compile-time constant expressions).
 template <typename T, typename U>
-__host__ __device__ __forceinline__
 constexpr auto max(T a, U b) {
     return a > b ? a : b;
 }
 
 template <typename T, typename U>
-__host__ __device__ __forceinline__
 constexpr auto min(T a, U b) {
     return a < b ? a : b;
 }
@@ -208,11 +207,18 @@ struct LayoutLeft {};
 template <typename T>
 constexpr bool is_rmem_v = false;
 
-// 3-arg max
+// 3-arg max — plain constexpr (no __host__ __device__ so it can be used in
+// compile-time constant expressions on HIP/Clang which rejects
+// __host__ __device__ functions in constexpr evaluation).
 template <typename T, typename U, typename V>
-__host__ __device__ __forceinline__
 constexpr auto max(T a, U b, V c) {
-    return max(max(a, b), c);
+    return (a > b ? a : b) > c ? (a > b ? a : b) : c;
+}
+
+// 3-arg min
+template <typename T, typename U, typename V>
+constexpr auto min(T a, U b, V c) {
+    return (a < b ? a : b) < c ? (a < b ? a : b) : c;
 }
 
 // Placeholder types
@@ -555,10 +561,17 @@ DynLayoutRowMajor3D make_layout(DynShape3D s, LayoutRight) {
     return DynLayoutRowMajor3D{s.d0, s.d1, s.d2};
 }
 
-// make_tensor with DynLayoutRowMajor -> TensorDyn
+// make_tensor with DynLayoutRowMajor -> TensorDyn (gmem_ptr)
 template <typename T>
 __host__ __device__ __forceinline__
 TensorDyn<T> make_tensor(gmem_ptr<T> p, DynLayoutRowMajor layout) {
+    return TensorDyn<T>{p.ptr, layout.rows_, layout.cols_, layout.cols_};
+}
+
+// make_tensor with DynLayoutRowMajor -> TensorDyn (smem_ptr)
+template <typename T>
+__device__ __forceinline__
+TensorDyn<T> make_tensor(smem_ptr<T> p, DynLayoutRowMajor layout) {
     return TensorDyn<T>{p.ptr, layout.rows_, layout.cols_, layout.cols_};
 }
 
@@ -583,6 +596,70 @@ template <typename T>
 __host__ __device__ __forceinline__
 TensorDyn3D<T> make_tensor(gmem_ptr<T> p, DynLayoutRowMajor3D layout) {
     return TensorDyn3D<T>{p.ptr, layout.d0_, layout.d1_, layout.d2_};
+}
+
+// 4D shape
+struct DynShape4D {
+    int d0, d1, d2, d3;
+    __host__ __device__ DynShape4D(int a, int b, int c, int d) : d0(a), d1(b), d2(c), d3(d) {}
+};
+
+// make_shape — 4 runtime ints
+template <typename T0, typename T1, typename T2, typename T3>
+__host__ __device__ __forceinline__
+DynShape4D make_shape(T0 a, T1 b, T2 c, T3 d) {
+    return DynShape4D{static_cast<int>(a), static_cast<int>(b), static_cast<int>(c), static_cast<int>(d)};
+}
+
+// get<I> for DynShape4D
+template <int I>
+__host__ __device__ __forceinline__
+int get(const DynShape4D& s) {
+    if constexpr (I == 0) return s.d0;
+    else if constexpr (I == 1) return s.d1;
+    else if constexpr (I == 2) return s.d2;
+    else return s.d3;
+}
+
+// 4D row-major layout
+struct DynLayoutRowMajor4D {
+    int d0_, d1_, d2_, d3_;
+    __host__ __device__ DynLayoutRowMajor4D(int a, int b, int c, int d) : d0_(a), d1_(b), d2_(c), d3_(d) {}
+    __host__ __device__ int operator()(int i, int j, int k, int l) const {
+        return ((i * d1_ + j) * d2_ + k) * d3_ + l;
+    }
+    __host__ __device__ int size() const { return d0_ * d1_ * d2_ * d3_; }
+};
+
+// make_layout(DynShape4D, LayoutRight) -> DynLayoutRowMajor4D
+__host__ __device__ __forceinline__
+DynLayoutRowMajor4D make_layout(DynShape4D s, LayoutRight) {
+    return DynLayoutRowMajor4D{s.d0, s.d1, s.d2, s.d3};
+}
+
+// 4D dynamic tensor (row-major)
+template <typename Element>
+struct TensorDyn4D {
+    Element* ptr_;
+    int d0_, d1_, d2_, d3_;
+    __host__ __device__ TensorDyn4D(Element* p, int a, int b, int c, int d)
+        : ptr_(p), d0_(a), d1_(b), d2_(c), d3_(d) {}
+    __device__ __forceinline__
+    Element& operator()(int i, int j, int k, int l) const {
+        return ptr_[((i * d1_ + j) * d2_ + k) * d3_ + l];
+    }
+    __device__ __forceinline__
+    Element& operator()(int flat) const { return ptr_[flat]; }
+    __host__ __device__ int size() const { return d0_ * d1_ * d2_ * d3_; }
+    __device__ __forceinline__
+    Element*& data() { return ptr_; }
+};
+
+// make_tensor with DynLayoutRowMajor4D -> TensorDyn4D
+template <typename T>
+__host__ __device__ __forceinline__
+TensorDyn4D<T> make_tensor(gmem_ptr<T> p, DynLayoutRowMajor4D layout) {
+    return TensorDyn4D<T>{p.ptr, layout.d0_, layout.d1_, layout.d2_, layout.d3_};
 }
 
 // -------------------------------------------------------

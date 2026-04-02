@@ -166,7 +166,11 @@ namespace flashmoe::os
     for (uint i = threadIdx.x; i < E; i += threads) {
       const auto eCount = cute::min(eCs[i], EC);
       const auto eCt = cute::ceil_div(eCount, bM);
+#if defined(FLASHMOE_PLATFORM_HIP)
+      atomicAdd(taskBound, eCt * tilesN1);
+#else
       atomicAdd_block(taskBound, eCt * tilesN1);
+#endif
     }
     if (threadIdx.x < subscriberCount) {
       const auto nRows = ecTilesM * E;
@@ -253,7 +257,7 @@ namespace flashmoe::os
       subscriber::Args args{
         ctx.signals, ctx.tQ, ctx.GEMM0Staging, senseBitset, subVisitedSet, interrupt, tQHeads,
         pL, lX, eL, status, taskBound, ctx.world, ctx.nLx, static_cast<uint>(ctx.nLx * ctx.world),
-        ctx.epRank, ecTilesM * bM, E, I, tIdx, tilesN0, tilesN1, ecTilesM, stateNumber
+        ctx.epRank, static_cast<uint>(ecTilesM * bM), E, I, static_cast<uint>(tIdx), tilesN0, tilesN1, ecTilesM, stateNumber
       };
       subscriber::start<topo, subscriberCount, bM, ElementC>(symHeap, args, fSbSL);
     }

@@ -13,14 +13,14 @@
 namespace flashmoe::hip_compat {
   template<typename Element>
   struct ReLU {
-    __device__ __forceinline__
+    __host__ __device__ __forceinline__
     Element operator()(const Element& x) const {
       return x > Element(0) ? x : Element(0);
     }
   };
   template<typename Element>
   struct GELU {
-    __device__ __forceinline__
+    __host__ __device__ __forceinline__
     Element operator()(const Element& x) const {
       // Approximation: x * 0.5 * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
       constexpr float kAlpha = 0.7978845608f; // sqrt(2/pi)
@@ -32,7 +32,7 @@ namespace flashmoe::hip_compat {
   };
   template<typename Element>
   struct SiLu {
-    __device__ __forceinline__
+    __host__ __device__ __forceinline__
     Element operator()(const Element& x) const {
       float xf = static_cast<float>(x);
       return static_cast<Element>(xf / (1.0f + expf(-xf)));

@@ -111,7 +111,7 @@ namespace flashmoe {
   };
 
   template<int subscriberWarpSize>
-  __host__ __forceinline__
+  __host__ __device__ __forceinline__
   constexpr auto subscriberTQLength(const int &world, const uint &numLocalExperts, const uint &ecTilesM,
                                     const uint &E, const uint &tilesN0, const uint &tilesN1,
                                     const uint &subscriberCount) {
@@ -150,7 +150,7 @@ namespace flashmoe {
                                  const int &myPE, const uint &E, const uint &nLx,
                                  cuda::std::byte *const&sHeap, uint64_t *const&signals,
                                  PEL *const&pel, PLI *const&pli, ELI *const&eli, LXI *const&lxi,
-                                 cudaStream_t stream) {
+                                 gpuStream_t stream) {
 #if defined(FLASHMOE_NVTX) && FLASHMOE_NVTX
     const flashmoeRange range{"FlashMoE::expertParallelBookkeeping"};
 #endif
@@ -208,10 +208,10 @@ namespace flashmoe {
       pelHost[i] = pt;
     }
 
-    cudaMemcpyAsync(pel, pelHost.data(), sizeof(PEL) * pelHost.size(), cudaMemcpyHostToDevice, stream);
-    cudaMemcpyAsync(pli, pliHost.data(), sizeof(PLI) * pliHost.size(), cudaMemcpyHostToDevice, stream);
-    cudaMemcpyAsync(eli, eliHost.data(), sizeof(ELI) * eliHost.size(), cudaMemcpyHostToDevice, stream);
-    cudaMemcpyAsync(lxi, lxiHost.data(), sizeof(LXI) * lxiHost.size(), cudaMemcpyHostToDevice, stream);
+    gpuMemcpyAsync(pel, pelHost.data(), sizeof(PEL) * pelHost.size(), gpuMemcpyHostToDevice, stream);
+    gpuMemcpyAsync(pli, pliHost.data(), sizeof(PLI) * pliHost.size(), gpuMemcpyHostToDevice, stream);
+    gpuMemcpyAsync(eli, eliHost.data(), sizeof(ELI) * eliHost.size(), gpuMemcpyHostToDevice, stream);
+    gpuMemcpyAsync(lxi, lxiHost.data(), sizeof(LXI) * lxiHost.size(), gpuMemcpyHostToDevice, stream);
   }
 
   __host__ __forceinline__
@@ -233,7 +233,7 @@ namespace flashmoe {
 
   __host__ __forceinline__
   Context initialize(const MoEArgs &args, const int &arch, const int *__restrict__ const& expertToEpRank,
-                     const int *__restrict__ const&epRankToGlobalRank, cudaStream_t stream) {
+                     const int *__restrict__ const&epRankToGlobalRank, gpuStream_t stream) {
 #if defined(FLASHMOE_NVTX) && FLASHMOE_NVTX
     const flashmoeRange range{"FlashMoE::initialize"};
 #endif
@@ -298,7 +298,7 @@ namespace flashmoe {
                                                           tilesN0,
                                                           tilesN1, args.threads - WARP_SIZE);
     const size_t secondaryTQL = secondaryTQLength(args.epWorld, args.numLocalExperts, ecTilesM, tilesN1);
-    CHECK_CUDA(cudaMallocAsync(&tQ, sizeof(Task) * (tQLength + secondaryTQL), stream));
+    CHECK_CUDA(gpuMallocAsync(&tQ, sizeof(Task) * (tQLength + secondaryTQL), stream));
     Task *pTq = tQ + tQLength;
     if (tQLength + secondaryTQL >= cuda::std::numeric_limits<uint>::max()) {
       throw std::runtime_error("Task Queue length should be < UINT32_MAX. Not an error: need to migrate to uint64");
@@ -316,62 +316,62 @@ namespace flashmoe {
     cuda::std::byte *GEMM0Staging = nullptr;
     const size_t stagingLength = static_cast<size_t>(args.epWorld * args.numLocalExperts * roundEC) * args.
                                  ffnIntermediateSize;
-    CHECK_CUDA(cudaMallocAsync(&GEMM0Staging, stagingLength * args.elementBytes, stream));
+    CHECK_CUDA(gpuMallocAsync(&GEMM0Staging, stagingLength * args.elementBytes, stream));
 
     BitSet *consumerBitMap = nullptr;
     const auto cbmLength = nSI(args.numExperts * ecTilesM * tilesN1, subscriberCount);
-    CHECK_CUDA(cudaMallocAsync(&consumerBitMap, sizeof(BitSet) * cbmLength, stream));
-    CHECK_CUDA(cudaMemsetAsync(consumerBitMap, 0, sizeof(BitSet) * cbmLength, stream));
+    CHECK_CUDA(gpuMallocAsync(&consumerBitMap, sizeof(BitSet) * cbmLength, stream));
+    CHECK_CUDA(gpuMemsetAsync(consumerBitMap, 0, sizeof(BitSet) * cbmLength, stream));
 
     uint8_t *producerBitMap = nullptr;
     const auto pbmLength = args.epWorld * args.numLocalExperts * ecTilesM * tilesN1;
-    CHECK_CUDA(cudaMallocAsync(&producerBitMap, sizeof(uint8_t) * pbmLength, stream));
-    CHECK_CUDA(cudaMemsetAsync(producerBitMap, 0, sizeof(uint8_t) * pbmLength, stream));
+    CHECK_CUDA(gpuMallocAsync(&producerBitMap, sizeof(uint8_t) * pbmLength, stream));
+    CHECK_CUDA(gpuMemsetAsync(producerBitMap, 0, sizeof(uint8_t) * pbmLength, stream));
 
     PEL *pel = nullptr;
-    CHECK_CUDA(cudaMallocAsync(&pel, sizeof(PEL) * args.numExperts, stream));
+    CHECK_CUDA(gpuMallocAsync(&pel, sizeof(PEL) * args.numExperts, stream));
 
     PLI *pli = nullptr;
-    CHECK_CUDA(cudaMallocAsync(&pli, sizeof(PLI) * args.epWorld, stream));
+    CHECK_CUDA(gpuMallocAsync(&pli, sizeof(PLI) * args.epWorld, stream));
 
     ELI *eli = nullptr;
-    CHECK_CUDA(cudaMallocAsync(&eli, sizeof(ELI) * args.numExperts, stream));
+    CHECK_CUDA(gpuMallocAsync(&eli, sizeof(ELI) * args.numExperts, stream));
 
     LXI *lxi = nullptr;
-    CHECK_CUDA(cudaMallocAsync(&lxi, sizeof(LXI) * args.numLocalExperts, stream));
+    CHECK_CUDA(gpuMallocAsync(&lxi, sizeof(LXI) * args.numLocalExperts, stream));
 
     TPS *tps = nullptr;
-    CHECK_CUDA(cudaMallocAsync(&tps, sizeof(TPS) * args.numExperts * roundEC, stream));
+    CHECK_CUDA(gpuMallocAsync(&tps, sizeof(TPS) * args.numExperts * roundEC, stream));
 
     TQSignal *tqs = nullptr;
-    CHECK_CUDA(cudaMallocAsync(&tqs, sizeof(TQSignal) * processors, stream));
-    CHECK_CUDA(cudaMemsetAsync(tqs, 0, sizeof(TQSignal) * processors, stream));
+    CHECK_CUDA(gpuMallocAsync(&tqs, sizeof(TQSignal) * processors, stream));
+    CHECK_CUDA(gpuMemsetAsync(tqs, 0, sizeof(TQSignal) * processors, stream));
 
     uint *dispatchSync = nullptr;
-    CHECK_CUDA(cudaMallocAsync(&dispatchSync, sizeof(uint) * args.numExperts, stream));
-    CHECK_CUDA(cudaMemsetAsync(dispatchSync, 0, sizeof(uint) * args.numExperts, stream));
+    CHECK_CUDA(gpuMallocAsync(&dispatchSync, sizeof(uint) * args.numExperts, stream));
+    CHECK_CUDA(gpuMemsetAsync(dispatchSync, 0, sizeof(uint) * args.numExperts, stream));
 
     uint *gtqHeads = nullptr;
     // ~= tiles(S)
     const size_t gtqHeadsLength = args.epWorld * args.numLocalExperts * ecTilesM;
-    CHECK_CUDA(cudaMallocAsync(&gtqHeads, sizeof(uint) * gtqHeadsLength, stream));
-    CHECK_CUDA(cudaMemsetAsync(gtqHeads, 0, sizeof(uint) * gtqHeadsLength, stream));
+    CHECK_CUDA(gpuMallocAsync(&gtqHeads, sizeof(uint) * gtqHeadsLength, stream));
+    CHECK_CUDA(gpuMemsetAsync(gtqHeads, 0, sizeof(uint) * gtqHeadsLength, stream));
 
     uint *tileSync = nullptr;
-    CHECK_CUDA(cudaMallocAsync(&tileSync, sizeof(uint) * gtqHeadsLength, stream));
-    CHECK_CUDA(cudaMemsetAsync(tileSync, 0, sizeof(uint) * gtqHeadsLength, stream));
+    CHECK_CUDA(gpuMallocAsync(&tileSync, sizeof(uint) * gtqHeadsLength, stream));
+    CHECK_CUDA(gpuMemsetAsync(tileSync, 0, sizeof(uint) * gtqHeadsLength, stream));
 
     uint *statusQ = nullptr;
-    CHECK_CUDA(cudaMallocAsync(&statusQ, sizeof(uint) * processors, stream));
+    CHECK_CUDA(gpuMallocAsync(&statusQ, sizeof(uint) * processors, stream));
     static_assert(ReadySignal::observed == 0);
-    CHECK_CUDA(cudaMemsetAsync(statusQ, 0, sizeof(uint) * processors, stream));
+    CHECK_CUDA(gpuMemsetAsync(statusQ, 0, sizeof(uint) * processors, stream));
 
     uint8_t* stateNumbers = nullptr;
-    CHECK_CUDA(cudaMallocAsync(&stateNumbers, sizeof(uint8_t) * args.blocks, stream));
+    CHECK_CUDA(gpuMallocAsync(&stateNumbers, sizeof(uint8_t) * args.blocks, stream));
     static_assert(SignalConstants::sequenceStart == 0x01);
-    CHECK_CUDA(cudaMemsetAsync(stateNumbers, 0x01, sizeof(uint8_t) * args.blocks, stream));
+    CHECK_CUDA(gpuMemsetAsync(stateNumbers, 0x01, sizeof(uint8_t) * args.blocks, stream));
 
-    CHECK_CUDA(cudaPeekAtLastError());
+    CHECK_CUDA(gpuPeekAtLastError());
     expertParallelBookkeeping(expertToEpRank, epRankToGlobalRank, args.epWorld, args.myPE,
                               args.numExperts, args.numLocalExperts, sHeap, signals, pel, pli, eli, lxi, stream);
 
@@ -448,67 +448,67 @@ namespace flashmoe {
   }
 
   __host__ __forceinline__
-  GateContext initializeGate(const uint &bNGate, const uint &numExperts, const uint &S, cudaStream_t stream) {
+  GateContext initializeGate(const uint &bNGate, const uint &numExperts, const uint &S, gpuStream_t stream) {
 #if defined(FLASHMOE_NVTX) && FLASHMOE_NVTX
     const flashmoeRange range{"FlashMoE::initializeGate"};
 #endif
     int *ecGuards = nullptr;
-    CHECK_CUDA(cudaMallocAsync(&ecGuards, sizeof(int) * numExperts, stream));
-    CHECK_CUDA(cudaMemsetAsync(ecGuards, flashmoe::STALE_AS_BYTE, sizeof(int) * numExperts, stream));
+    CHECK_CUDA(gpuMallocAsync(&ecGuards, sizeof(int) * numExperts, stream));
+    CHECK_CUDA(gpuMemsetAsync(ecGuards, flashmoe::STALE_AS_BYTE, sizeof(int) * numExperts, stream));
     SoftmaxStatePacked *ssp = nullptr;
     RingTopKPayload *rtp = nullptr;
     if (numExperts > bNGate) {
       const auto tE = cute::ceil_div(numExperts, bNGate);
-      CHECK_CUDA(cudaMallocAsync(&ssp, sizeof(SoftmaxStatePacked) * S * tE, stream));
-      CHECK_CUDA(cudaMemsetAsync(ssp, 0, sizeof(SoftmaxStatePacked) * S * tE, stream));
+      CHECK_CUDA(gpuMallocAsync(&ssp, sizeof(SoftmaxStatePacked) * S * tE, stream));
+      CHECK_CUDA(gpuMemsetAsync(ssp, 0, sizeof(SoftmaxStatePacked) * S * tE, stream));
 
-      CHECK_CUDA(cudaMallocAsync(&rtp, 2 * sizeof(RingTopKPayload) * S * tE, stream));
-      CHECK_CUDA(cudaMemsetAsync(rtp, 0, 2 * sizeof(RingTopKPayload) * S * tE, stream));
+      CHECK_CUDA(gpuMallocAsync(&rtp, 2 * sizeof(RingTopKPayload) * S * tE, stream));
+      CHECK_CUDA(gpuMemsetAsync(rtp, 0, 2 * sizeof(RingTopKPayload) * S * tE, stream));
     }
     return GateContext{ecGuards, ssp, rtp};
   }
 
   __host__ __forceinline__
-  void finalizeGate(const GateContext &gCtx, cudaStream_t stream) {
+  void finalizeGate(const GateContext &gCtx, gpuStream_t stream) {
 #if defined(FLASHMOE_NVTX) && FLASHMOE_NVTX
     const flashmoeRange range{"FlashMoE::finalizeGate"};
 #endif
-    CHECK_CUDA(cudaFreeAsync(gCtx.ecGuards, stream));
+    CHECK_CUDA(gpuFreeAsync(gCtx.ecGuards, stream));
     if (gCtx.ssp != nullptr) {
-      CHECK_CUDA(cudaFreeAsync(gCtx.ssp, stream));
+      CHECK_CUDA(gpuFreeAsync(gCtx.ssp, stream));
     }
     if (gCtx.rtp != nullptr) {
-      CHECK_CUDA(cudaFreeAsync(gCtx.rtp, stream));
+      CHECK_CUDA(gpuFreeAsync(gCtx.rtp, stream));
     }
-    CHECK_CUDA(cudaPeekAtLastError());
-    CHECK_CUDA(cudaStreamSynchronize(stream));
+    CHECK_CUDA(gpuPeekAtLastError());
+    CHECK_CUDA(gpuStreamSynchronize(stream));
   }
 
   __host__ __forceinline__
-  void finalize(const Context &ctx, cudaStream_t stream) {
+  void finalize(const Context &ctx, gpuStream_t stream) {
 #if defined(FLASHMOE_NVTX) && FLASHMOE_NVTX
     const flashmoeRange range{"FlashMoE::finalize"};
 #endif
     // free workspace memory
-    CHECK_CUDA(cudaFreeAsync(ctx.tQ, stream));
-    CHECK_CUDA(cudaFreeAsync(ctx.stateNumbers, stream));
-    CHECK_CUDA(cudaFreeAsync(ctx.GEMM0Staging, stream));
-    CHECK_CUDA(cudaFreeAsync(ctx.pel, stream));
-    CHECK_CUDA(cudaFreeAsync(ctx.pli, stream));
-    CHECK_CUDA(cudaFreeAsync(ctx.eli, stream));
-    CHECK_CUDA(cudaFreeAsync(ctx.lxi, stream));
-    CHECK_CUDA(cudaFreeAsync(ctx.consumerCombineBitMap, stream));
-    CHECK_CUDA(cudaFreeAsync(ctx.producerCombineBitMap, stream));
-    CHECK_CUDA(cudaFreeAsync(ctx.tokenIndices, stream));
-    CHECK_CUDA(cudaFreeAsync(ctx.tqs, stream));
-    CHECK_CUDA(cudaFreeAsync(ctx.dispatchSync, stream));
-    CHECK_CUDA(cudaFreeAsync(ctx.gTqHeads, stream));
-    CHECK_CUDA(cudaFreeAsync(ctx.tileSync, stream));
-    CHECK_CUDA(cudaFreeAsync(ctx.statusQueue, stream));
-    CHECK_CUDA(cudaStreamSynchronize(stream));
+    CHECK_CUDA(gpuFreeAsync(ctx.tQ, stream));
+    CHECK_CUDA(gpuFreeAsync(ctx.stateNumbers, stream));
+    CHECK_CUDA(gpuFreeAsync(ctx.GEMM0Staging, stream));
+    CHECK_CUDA(gpuFreeAsync(ctx.pel, stream));
+    CHECK_CUDA(gpuFreeAsync(ctx.pli, stream));
+    CHECK_CUDA(gpuFreeAsync(ctx.eli, stream));
+    CHECK_CUDA(gpuFreeAsync(ctx.lxi, stream));
+    CHECK_CUDA(gpuFreeAsync(ctx.consumerCombineBitMap, stream));
+    CHECK_CUDA(gpuFreeAsync(ctx.producerCombineBitMap, stream));
+    CHECK_CUDA(gpuFreeAsync(ctx.tokenIndices, stream));
+    CHECK_CUDA(gpuFreeAsync(ctx.tqs, stream));
+    CHECK_CUDA(gpuFreeAsync(ctx.dispatchSync, stream));
+    CHECK_CUDA(gpuFreeAsync(ctx.gTqHeads, stream));
+    CHECK_CUDA(gpuFreeAsync(ctx.tileSync, stream));
+    CHECK_CUDA(gpuFreeAsync(ctx.statusQueue, stream));
+    CHECK_CUDA(gpuStreamSynchronize(stream));
     flashmoe::shmem::shmem_free(ctx.symHeap);
     flashmoe::shmem::shmem_free(ctx.signals);
-    CHECK_CUDA(cudaPeekAtLastError());
+    CHECK_CUDA(gpuPeekAtLastError());
   }
 }
 #endif //FLASHMOE_BOOTSTRAP_CUH

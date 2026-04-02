@@ -219,7 +219,7 @@ void wg_init() {
 #if defined(FLASHMOE_PLATFORM_HIP)
 #  pragma clang diagnostic push
 #  pragma clang diagnostic ignored "-Wdeprecated-declarations"
-  rocshmem_wg_init();
+  rocshmem::rocshmem_wg_init();
 #  pragma clang diagnostic pop
 #endif
   // NVSHMEM has no equivalent -- no-op.
@@ -230,7 +230,7 @@ void wg_finalize() {
 #if defined(FLASHMOE_PLATFORM_HIP)
 #  pragma clang diagnostic push
 #  pragma clang diagnostic ignored "-Wdeprecated-declarations"
-  rocshmem_wg_finalize();
+  rocshmem::rocshmem_wg_finalize();
 #  pragma clang diagnostic pop
 #endif
   // NVSHMEM has no equivalent -- no-op.

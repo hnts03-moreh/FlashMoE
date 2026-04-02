@@ -18,7 +18,7 @@ namespace flashmoe
 {
   // Also applies to shared memory banks
   template <typename Element>
-  __device__ __forceinline__
+  __host__ __device__ __forceinline__
   constexpr auto rTCL(uint const& len) {
     return cuda::round_up(len * sizeof(Element), SMEM_BANKS_TOTAL_BYTE_WIDTH);
   }

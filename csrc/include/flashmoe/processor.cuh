@@ -72,7 +72,7 @@ namespace flashmoe::processor
     constexpr Converter<ElementC, typename decltype(accumulator)::value_type> storeConv{};
     const auto c_frag = accumulator.get_results();
     constexpr int accum_size = flashmoe_blas::size(c_frag);
-    cute::for_each(cute::make_int_sequence<accum_size>{}, [&c_frag, &d_frag](auto i) {
+    cute::for_each(cute::make_int_sequence<accum_size>{}, [&c_frag, &d_frag, &storeConv, &act, &loadConv](auto i) {
       d_frag(i) = storeConv(act(c_frag(i) + loadConv(d_frag(i))));
     });
     auto gC = tile::getC<BM{}, BN{}, flashmoe_blas::arrangement_of_v_c<BLAS>>(c, M, N, cute::select<0, 1>(tileCoord));
@@ -264,9 +264,18 @@ namespace flashmoe::processor
              const Heap& symHeap, const ProcessorArgs& pA) {
     static_assert(sizeof(Task) % sizeof(uint4) == 0 && alignof(Task) % alignof(uint4) == 0);
     static_assert(cuda::std::is_trivially_copyable_v<Task>);
+#if defined(FLASHMOE_PLATFORM_HIP)
+    // HIP does not allow __shared__ variables with initializers (even defaulted ones).
+    // Use raw storage + placement access instead.
+    __shared__ __align__(alignof(Task)) char currentTaskStorage[sizeof(Task)];
+    auto& currentTask = *reinterpret_cast<Task*>(currentTaskStorage);
+    __shared__ uint globalInterrupt;
+    __shared__ uint enqueue;
+#else
     __shared__ Task currentTask;
     __shared__ uint globalInterrupt;
     __shared__ uint enqueue;
+#endif
     TQSignal tqs{0U, 0U};
     static_assert(sizeof(TQSignal) == sizeof(uint64_t) && alignof(TQSignal) == alignof(uint64_t));
     static_assert(sizeof(SignalPayload<PacketStage::last>) == sizeof(uint64_t) &&

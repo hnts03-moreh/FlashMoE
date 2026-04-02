@@ -86,7 +86,7 @@ namespace flashmoe::sbs {
   // sequence bit states necessary to break symmetry in forward or backward detection
   // includes ground state
   constexpr int SNS = (2 * (2 + AEE));
-  __forceinline__ __host__
+  __forceinline__ __host__ __device__
   constexpr uint16_t next(const uint16_t &current) {
     return current + 1 == SNS ? static_cast<decltype(current)>(sequenceStart) : current + 1;
   }

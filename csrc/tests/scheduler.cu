@@ -55,7 +55,8 @@ __device__ void run_producer(
     const uint32_t& q) {
     uint32_t cursor = 0;
     uint32_t interrupt = 0;
-    cuda::atomic_ref<uint32_t, cuda::thread_scope_block> inr{*(interrupts + q)};
+    // Poll interrupt per-warp (matches production subscriber.cuh pattern at line 91)
+    cuda::atomic_ref<uint32_t, cuda::thread_scope_block> inr{*(interrupts + (q / FLASHMOE_WARP_SIZE))};
     cuda::atomic_ref<uint32_t, cuda::thread_scope_block> tqh{*(tQHeads + q)};
     MockTask task{};
     task.consumed = 0;

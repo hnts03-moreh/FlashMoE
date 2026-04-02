@@ -41,8 +41,8 @@ namespace flashmoe::moe
     static_assert(cute::get<0>(GEMM0Tile{}) == cute::get<0>(GEMM1Tile{}));
     using Arch = cute::Int<arch>;
     using Threads = cute::Int<_threads>;
-    using CM = cute::C<cm>;
-    using MT = cute::C<mt>;
+    using CM = cute::C<static_cast<int>(cm)>;
+    using MT = cute::C<static_cast<int>(mt)>;
     using DType = Element;
     using AccumType = cuda::std::conditional_t<cuda::std::is_same_v<Element, double>, double, float>;
     using PSS = cute::Int<processor_state_size>;
@@ -56,10 +56,17 @@ namespace flashmoe::moe
   __host__ __forceinline__
   auto checkAlignment(const void *const&p, const bool supports32 = false) {
     const auto alignment = supports32 ? 32 : 16;
+#if defined(FLASHMOE_PLATFORM_HIP)
+    if (p == nullptr || (reinterpret_cast<uintptr_t>(p) % alignment) != 0) {
+      printf("Pointer is not %d-byte aligned\n", alignment);
+      std::abort();
+    }
+#else
     if (p == nullptr || !cuda::is_aligned(p, alignment)) {
       printf("Pointer is not %d-byte aligned\n", alignment);
       cuda::std::terminate();
     }
+#endif
   }
 
   template<typename Config>
@@ -83,14 +90,14 @@ namespace flashmoe::moe
 
     constexpr int bM = bM0;
     constexpr auto GEMM0Sz = cutlass::round_up(cute::max(sizeof(Element) * bK0 * pSK0 * (bM + bN0),
-    sizeof(Element) * bM * bN0) + (mt == MLPMatmulType::gated ? sizeof(Element) * bM * bN0 : 0), MAX_ALIGNMENT);
+    sizeof(Element) * bM * bN0) + (mt == static_cast<int>(MLPMatmulType::gated) ? sizeof(Element) * bM * bN0 : 0), MAX_ALIGNMENT);
     constexpr auto GEMM1Sz = cutlass::round_up(cute::max(sizeof(Element) * bK1 * pSK1 * (bM + bN1),
       sizeof(Element) * bM * bN1), MAX_ALIGNMENT);
     const auto dispatchSz = E * (sizeof(PEL) + sizeof(int));
     const auto OSSz = os::getSharedSize<threads, bM>(world, numLocalExperts, E, EC, tilesN1);
     const auto taskSz = sizeof(Task) * tilesN1;
     constexpr auto combineSz = cutlass::round_up(sizeof(Element) * bM * bN1, MAX_ALIGNMENT);
-    return cute::max(GEMM0Sz, GEMM1Sz, dispatchSz, OSSz, taskSz, combineSz);
+    return cute::max(cute::max(GEMM0Sz, GEMM1Sz, dispatchSz), cute::max(OSSz, taskSz, combineSz));
   }
 
   template<int bM, int bN0, int bN1>
@@ -244,7 +251,7 @@ namespace flashmoe::moe
     const auto* __restrict__ biasDown = reinterpret_cast<const DataType*>(kArgs.biasDown);
     auto* __restrict__ moeOut = reinterpret_cast<DataType*>(kArgs.moeOut);
     // processor
-    processor::start<Config::MT::value, topo, threads, Config::CM::value, TileGEMM0, TileGEMM1, GEMM0Act>
+    processor::start<static_cast<MLPMatmulType>(Config::MT::value), topo, threads, static_cast<CombineMode>(Config::CM::value), TileGEMM0, TileGEMM1, GEMM0Act>
     (flashWorkspace, kArgs.S, kArgs.H, kArgs.I, roundEC, kArgs.flagColStride, tilesN0, tilesN1,
       expertUp, expertUpV,  biasUp, biasUpV,
       static_cast<AccumType>(kArgs.swishAlpha), static_cast<AccumType>(kArgs.swishBeta),
@@ -264,8 +271,8 @@ namespace flashmoe::moe
     Activation a
   >
   __host__ __forceinline__
-  void forwardHost(const KernelArgs& kArgs, const Context& ctx, cudaStream_t stream) {
-    if constexpr (Config::CM::value == CombineMode::plural) {
+  void forwardHost(const KernelArgs& kArgs, const Context& ctx, gpuStream_t stream) {
+    if constexpr (Config::CM::value == static_cast<int>(CombineMode::plural)) {
       gpuMemsetAsync(kArgs.moeOut, 0, sizeof(typename Config::DType) * kArgs.S * static_cast<size_t>(kArgs.H), stream);
     }
     forward<Config, a, topo><<<ctx.blocks, Config::Threads::value, ctx.smemSize, stream>>>(kArgs, ctx);

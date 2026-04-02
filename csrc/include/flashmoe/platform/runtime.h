@@ -94,6 +94,17 @@ inline hipError_t gpuFuncSetAttribute(Func func, hipFuncAttribute attr, int valu
 #define gpuGetLastError    hipGetLastError
 #define gpuPeekAtLastError hipPeekAtLastError
 
+// Graph API
+using gpuGraph_t          = hipGraph_t;
+using gpuGraphExec_t      = hipGraphExec_t;
+#define gpuStreamBeginCapture      hipStreamBeginCapture
+#define gpuStreamEndCapture        hipStreamEndCapture
+#define gpuGraphInstantiate        hipGraphInstantiate
+#define gpuGraphLaunch             hipGraphLaunch
+#define gpuGraphExecDestroy        hipGraphExecDestroy
+#define gpuGraphDestroy            hipGraphDestroy
+#define gpuStreamCaptureModeGlobal hipStreamCaptureModeGlobal
+
 #else // CUDA
 
 using gpuStream_t     = cudaStream_t;
@@ -149,6 +160,17 @@ using gpuError_t      = cudaError_t;
 #define gpuGetErrorString  cudaGetErrorString
 #define gpuGetLastError    cudaGetLastError
 #define gpuPeekAtLastError cudaPeekAtLastError
+
+// Graph API
+using gpuGraph_t          = cudaGraph_t;
+using gpuGraphExec_t      = cudaGraphExec_t;
+#define gpuStreamBeginCapture      cudaStreamBeginCapture
+#define gpuStreamEndCapture        cudaStreamEndCapture
+#define gpuGraphInstantiate        cudaGraphInstantiate
+#define gpuGraphLaunch             cudaGraphLaunch
+#define gpuGraphExecDestroy        cudaGraphExecDestroy
+#define gpuGraphDestroy            cudaGraphDestroy
+#define gpuStreamCaptureModeGlobal cudaStreamCaptureModeGlobal
 
 #endif // FLASHMOE_PLATFORM_HIP
 

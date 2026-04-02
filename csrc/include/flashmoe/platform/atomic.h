@@ -66,6 +66,15 @@ constexpr int memory_order_release  = __ATOMIC_RELEASE;
 constexpr int memory_order_acq_rel  = __ATOMIC_ACQ_REL;
 constexpr int memory_order_seq_cst  = __ATOMIC_SEQ_CST;
 
+// Scoped enum-style namespace for cuda::memory_order::acquire etc.
+namespace memory_order {
+  constexpr int relaxed  = __ATOMIC_RELAXED;
+  constexpr int acquire  = __ATOMIC_ACQUIRE;
+  constexpr int release  = __ATOMIC_RELEASE;
+  constexpr int acq_rel  = __ATOMIC_ACQ_REL;
+  constexpr int seq_cst  = __ATOMIC_SEQ_CST;
+} // namespace memory_order
+
 } // namespace cuda
 
 // -------------------------------------------------------

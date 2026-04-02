@@ -94,7 +94,11 @@ namespace flashmoe
       const auto peer = enL[i].peer;
       const auto nTokens = cute::min(seC[i], EC);
       const auto tilesM = cute::ceil_div(nTokens, bM);
+#if defined(FLASHMOE_PLATFORM_HIP)
+      atomicAdd(sPTT + peer, tilesM);
+#else
       atomicAdd_block(sPTT + peer, tilesM);
+#endif
     }
     __syncthreads();
     // Update lookup table
@@ -155,17 +159,11 @@ namespace flashmoe
 #if defined(FLASHMOE_PLATFORM_HIP)
               // HIP: plain global load/store; non-coherent caching hints
               // are handled by the compiler/hardware on CDNA.
-              const auto v = __builtin_nontemporal_load(aP + k);
-              __builtin_nontemporal_store(v, localPH + k);
-#else
-#if defined(FLASHMOE_PLATFORM_HIP)
-              // HIP: no PTX intrinsics; use regular load/store (compiler vectorizes)
               const auto v = *(aP + k);
               *(localPH + k) = v;
 #else
               const auto v = cuda::ptx::ld_nc_L1_no_allocate_L2_256B(cuda::ptx::space_global, aP + k);
               cuda::ptx::st(cuda::ptx::space_global, localPH + k, v);
-#endif
 #endif
             }
           }
@@ -187,8 +185,13 @@ namespace flashmoe
               auto* __restrict__ localPH = peerHeap + intraIdx * vH;
               const auto* __restrict__ aP = vTokens + tokenIdx * vH;
               for (int k = static_cast<int>(threadIdx.x); k < vH; k += threads) {
+#if defined(FLASHMOE_PLATFORM_HIP)
+                const auto v = *(aP + k);
+                *(localPH + k) = v;
+#else
                 const auto v = cuda::ptx::ld_nc_L1_no_allocate_L2_256B(cuda::ptx::space_global, aP + k);
                 cuda::ptx::st(cuda::ptx::space_global, localPH + k, v);
+#endif
               }
             }
           }

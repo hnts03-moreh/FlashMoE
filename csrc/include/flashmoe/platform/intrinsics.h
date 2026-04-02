@@ -29,6 +29,13 @@
 #define __shfl_xor_sync(mask, val, laneMask, ...) __shfl_xor((val), (laneMask) __VA_OPT__(,) __VA_ARGS__)
 
 // -------------------------------------------------------
+// __trap — device-side abort
+// -------------------------------------------------------
+// CUDA: __trap() halts the current kernel with an error.
+// HIP: __builtin_trap() is the equivalent.
+#define FLASHMOE_TRAP()  __builtin_trap()
+
+// -------------------------------------------------------
 // Ballot
 // -------------------------------------------------------
 // CUDA: uint32_t __ballot_sync(uint32_t mask, int predicate)
@@ -74,6 +81,10 @@ int flashmoe_ffs(flashmoe_lane_mask_t mask) {
 }
 
 #else // CUDA
+
+#if !defined(FLASHMOE_TRAP)
+#define FLASHMOE_TRAP()  __trap()
+#endif
 
 __device__ __forceinline__
 int flashmoe_popc(flashmoe_lane_mask_t mask) {

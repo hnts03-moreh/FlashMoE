@@ -238,7 +238,11 @@ namespace flashmoe::subscriber
   void sTB(const Args& args, const int& peer, const int& peerTaskTiles = 0) {
     if (!atomicTAS<cuda::thread_scope_block>(args.status + peer)) {
       const auto superfluous = (args.tilesN0 + args.tilesN1) * ((args.nLx * args.ecTilesM) - peerTaskTiles);
+#if defined(FLASHMOE_PLATFORM_HIP)
+      atomicSub(args.taskCount, superfluous);
+#else
       atomicSub_block(args.taskCount, superfluous);
+#endif
     }
   }
 
@@ -301,7 +305,7 @@ namespace flashmoe::subscriber
                   */
                   if (__builtin_expect(sigPayload.routedTokens > 0, 0)) {
                     // protocol violation
-                    __trap();
+                    FLASHMOE_TRAP();
                   }
                 }
               }
@@ -423,7 +427,7 @@ namespace flashmoe::subscriber
                 if (__builtin_expect(!isPacketHere, 0)) {
                   // protocol violation, this should be impossible
                   // if we are here, something insanely wrong has happened external to our program
-                  __trap();
+                  FLASHMOE_TRAP();
                 }
                 // construct combine ingredients
                 Ingredients ingredients{};
@@ -494,7 +498,7 @@ namespace flashmoe::subscriber
                 const bool isPacketHere = flashmoe::shmem::device::uint64_test(flags + flagIdx, SHMEM_CMP_EQ,
                                                               signal);
                 if (__builtin_expect(!isPacketHere, 0)) {
-                  __trap();
+                  FLASHMOE_TRAP();
                 }
                 Ingredients ingredients{};
                 const auto tokenIdx = sigPayload.batchIdx * bM;

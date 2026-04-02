@@ -5,10 +5,8 @@
 
 #include "../include/flashmoe/platform/platform.h"
 
-#if defined(FLASHMOE_PLATFORM_HIP)
-// HIP/ROCSHMEM: The E2E distributed MoE test requires ROCSHMEM which is not yet
-// fully integrated. This file compiles a stub on HIP that prints a message.
-// The full test will be enabled once ROCSHMEM Python/C++ integration is complete.
+#if defined(FLASHMOE_PLATFORM_HIP) && !defined(FLASHMOE_HAS_SHMEM)
+// HIP stub: ROCSHMEM is not available — print a message and exit.
 #include <cstdio>
 int main(const int argc, char** argv) {
     (void)argc; (void)argv;
@@ -17,22 +15,36 @@ int main(const int argc, char** argv) {
                     "(testGEMM, testGate, testCombine, testScheduler) instead.\n");
     return 0;
 }
-#else // CUDA path — original code preserved below
+#else // CUDA path or HIP+ROCSHMEM path
 
 #include <charconv>
+#include <cmath>
 #include <limits>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <random> // for seeds
 #include <stdexcept>
+#include <vector>
 
 #include <mpi.h>
+
+#if defined(FLASHMOE_PLATFORM_HIP)
+#  include "../include/flashmoe/platform/shmem.h"
+#else
+#  include <nvshmem.h>
+#endif
+
+#if !defined(FLASHMOE_PLATFORM_HIP)
+#  include <cuda/barrier>
+#endif
 
 #include "../include/flashmoe/flashmoe.cuh"
 
 #include "common.cuh"
 
+#if !defined(FLASHMOE_PLATFORM_HIP)
+// cublasdx-based reference GEMM — only available on CUDA
 template<typename TileGEMM, typename Activation, flashmoe::MLPMatmulType mt, typename ElementC, typename Element>
 __device__ __forceinline__
 void gemmMainloop(cuda::std::byte* __restrict__ const& workspace,
@@ -212,7 +224,7 @@ void reference(const flashmoe::TPS* __restrict__ const& tokenIds,
   const AccumType& swishAlpha, const AccumType& swishBeta,
   const size_t& S, const size_t& H, const size_t& EC, const size_t& E, const size_t& I, const size_t& topK,
   const int& num_sms,
-  cudaStream_t stream) {
+  gpuStream_t stream) {
 #if defined(FLASHMOE_NVTX) && FLASHMOE_NVTX
   const flashmoe::flashmoeRange range{"Reference"};
 #endif
@@ -234,19 +246,19 @@ void reference(const flashmoe::TPS* __restrict__ const& tokenIds,
 
   auto kernel0 = gk<TileGEMM0, Activation, mt, Element, Element>;
   // set shared memory
-  CHECK_CUDA(cudaFuncSetAttribute(kernel0, cudaFuncAttributeMaxDynamicSharedMemorySize, GEMM0SharedSize));
+  CHECK_CUDA(gpuFuncSetAttribute(kernel0, gpuFuncAttributeMaxDynamicSharedMemorySize, GEMM0SharedSize));
   int bps = 0;
-  CHECK_CUDA(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel0, threads, GEMM0SharedSize));
+  CHECK_CUDA(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel0, threads, GEMM0SharedSize));
   const auto blocks0 = cute::min((roundEC / bM0) * (I / bN0), bps * num_sms);
   auto kernel1 = gk<TileGEMM1, cublasdx::identity, flashmoe::MLPMatmulType::vanilla, Element, Element>;
   // set shared memory
-  CHECK_CUDA(cudaFuncSetAttribute(kernel1, cudaFuncAttributeMaxDynamicSharedMemorySize, GEMM1SharedSize));
+  CHECK_CUDA(gpuFuncSetAttribute(kernel1, gpuFuncAttributeMaxDynamicSharedMemorySize, GEMM1SharedSize));
   // get blocks
-  CHECK_CUDA(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel1, threads, GEMM1SharedSize));
+  CHECK_CUDA(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel1, threads, GEMM1SharedSize));
   const auto blocks1 = cute::min((roundEC / bM0) * (H / bN1), bps * num_sms);
   std::vector<int> hCounts (E);
-  cudaMemcpyAsync(hCounts.data(), expertCounts, sizeof(int) * E, cudaMemcpyDeviceToHost, stream);
-  cudaStreamSynchronize(stream);
+  gpuMemcpyAsync(hCounts.data(), expertCounts, sizeof(int) * E, gpuMemcpyDeviceToHost, stream);
+  gpuStreamSynchronize(stream);
   constexpr auto nonAlpha = static_cast<AccumType>(1.f);
   constexpr auto nonBeta = static_cast<AccumType>(1.f);
   Element* nonV = nullptr;
@@ -276,6 +288,7 @@ void reference(const flashmoe::TPS* __restrict__ const& tokenIds,
     }
   }
 }
+#endif // !FLASHMOE_PLATFORM_HIP
 
 struct Seeds {
   using SeedType = uint64_t;
@@ -329,32 +342,48 @@ void kickstart(const Options& opts) {
       .append(", E: ").append(std::to_string(opts.E))
       .append(", k: ").append(std::to_string(opts.k))};
 #endif
+#if defined(FLASHMOE_PLATFORM_HIP)
+  flashmoe::shmem::init();
+  // ROCSHMEM has no TEAM_NODE; use MPI to get local rank
+  MPI_Comm local_comm;
+  MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &local_comm);
+  int local_rank;
+  MPI_Comm_rank(local_comm, &local_rank);
+  MPI_Comm_free(&local_comm);
+  const uint devId = static_cast<uint>(local_rank);
+#else
   nvshmem_init();
   const uint devId = nvshmem_team_my_pe(NVSHMEMX_TEAM_NODE);
-  CHECK_CUDA(cudaSetDevice(devId));
-  cudaStream_t stream;
-  CHECK_CUDA(cudaStreamCreate(&stream));
+#endif
+  CHECK_CUDA(gpuSetDevice(devId));
+  gpuStream_t stream;
+  CHECK_CUDA(gpuStreamCreate(&stream));
 
+#if defined(FLASHMOE_PLATFORM_HIP)
+  const int actualArch = FLASHMOE_ARCH; // e.g. 942 for MI300X, set by CMake
+  (void)actualArch; // arch validation not meaningful on HIP in the same way
+#else
   int archMajor = 0;
-  CHECK_CUDA(cudaDeviceGetAttribute(&archMajor,cudaDevAttrComputeCapabilityMajor, devId));
+  CHECK_CUDA(gpuDeviceGetAttribute(&archMajor, gpuDevAttrComputeCapabilityMajor, devId));
   int archMinor = 0;
-  CHECK_CUDA(cudaDeviceGetAttribute(&archMinor,cudaDevAttrComputeCapabilityMinor, devId));
+  CHECK_CUDA(gpuDeviceGetAttribute(&archMinor, gpuDevAttrComputeCapabilityMinor, devId));
   const auto actualArch = archMajor * 100 + archMinor * 10;
   if (Arch > actualArch) {
     throw std::invalid_argument("Invalid Arch");
   }
+#endif
   int num_sms = 0;
-  CHECK_CUDA(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, devId));
+  CHECK_CUDA(gpuDeviceGetAttribute(&num_sms, gpuDevAttrMultiProcessorCount, devId));
 
-  const auto world = nvshmem_n_pes();
-  const auto epRank = nvshmem_my_pe();
+  const auto world = flashmoe::shmem::n_pes();
+  const auto epRank = flashmoe::shmem::my_pe();
   if (epRank == 0) {
     printf("rank, dtype, S, H, I, E, k, FlashMoE_Time(ms), error(%%), EC, GPU, SM, Topology,"
            " MLPType, bM, bN0, bK0, bN1, bK1, threads, blocks/SM, SMs, blocks, rtol, atol, "
            "graph_launches, warmup, runs, workspace(MiB)\n");
     fflush(stdout); // ensures the header shows up first, especially relevant in large world size runs.
   }
-  nvshmem_sync_all(); // this is needed to force initialization of NVSHMEM state.
+  flashmoe::shmem::sync_all(); // force initialization of SHMEM state.
 
   if (opts.E % world != 0) {
     throw std::runtime_error("E should be a multiple of world");
@@ -392,7 +421,7 @@ void kickstart(const Options& opts) {
 
   const auto kernelSz = flashmoe::moe::kernelSMEM<Config>(opts.E, opts.EC, world, numLocalExperts, tilesN1);
   int maxSharedMemory = 0;
-  CHECK_CUDA(cudaDeviceGetAttribute(&maxSharedMemory,cudaDevAttrMaxSharedMemoryPerBlockOptin, devId));
+  CHECK_CUDA(gpuDeviceGetAttribute(&maxSharedMemory, gpuDevAttrMaxSharedMemoryPerBlockOptin, devId));
   if (kernelSz > maxSharedMemory) {
     const auto errmsg = std::string("Required shared memory ").append(std::to_string(kernelSz))
     .append(" exceeds hardware limits: ").append(std::to_string(maxSharedMemory)).append(" Reduce tile shapes or input sizes.");
@@ -403,13 +432,13 @@ void kickstart(const Options& opts) {
   const auto kernelTopo = flashmoe::detectTopo();
   if (kernelTopo == flashmoe::Topology::NVLINK_ONLY) {
     auto kernel = flashmoe::moe::forward<Config, act, flashmoe::Topology::NVLINK_ONLY>;
-    CHECK_CUDA(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kernelSz));
-    CHECK_CUDA(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel, threads, kernelSz));
+    CHECK_CUDA(gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, kernelSz));
+    CHECK_CUDA(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel, threads, kernelSz));
   }
   else {
     auto kernel = flashmoe::moe::forward<Config, act, flashmoe::Topology::MIXED>;
-    CHECK_CUDA(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kernelSz));
-    CHECK_CUDA(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel, threads, kernelSz));
+    CHECK_CUDA(gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, kernelSz));
+    CHECK_CUDA(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel, threads, kernelSz));
   }
 
   const auto blocks = flashmoe::moe::kernelBlocks<bM, bN0, bN1>(opts.S, opts.H, opts.I, opts.E, opts.k,
@@ -429,9 +458,9 @@ void kickstart(const Options& opts) {
     .append(" Reduce tile shapes or input sizes.");
     throw std::runtime_error(errmsg);
   }
-  CHECK_CUDA(cudaFuncSetAttribute(gateKernel, cudaFuncAttributeMaxDynamicSharedMemorySize, gateShared));
+  CHECK_CUDA(gpuFuncSetAttribute(gateKernel, gpuFuncAttributeMaxDynamicSharedMemorySize, gateShared));
   int gbps = 0;
-  CHECK_CUDA(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&gbps, gateKernel, gateThreads, gateShared));
+  CHECK_CUDA(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&gbps, gateKernel, gateThreads, gateShared));
   const int gateBlocks = cute::min(cute::ceil_div(opts.S, bM) * cute::ceil_div(opts.E, bNGate),gbps * num_sms);
   if (opts.E > gateBlocks * bNGate) {
     throw std::invalid_argument("E is too big!");
@@ -442,11 +471,11 @@ void kickstart(const Options& opts) {
   std::random_device rd;
   Element* tokens = nullptr;
   const auto roundS = cute::max(opts.S, static_cast<size_t>(bM));
-  CHECK_CUDA(cudaMallocAsync(&tokens, sizeof(Element) * roundS * opts.H, stream));
+  CHECK_CUDA(gpuMallocAsync(&tokens, sizeof(Element) * roundS * opts.H, stream));
   randUniform<Arch>(tokens, roundS * opts.H, rd(), minv, maxv, stream);
 
   Element* gateWeights = nullptr;
-  CHECK_CUDA(cudaMallocAsync(&gateWeights, sizeof(Element) * opts.H * opts.E, stream));
+  CHECK_CUDA(gpuMallocAsync(&gateWeights, sizeof(Element) * opts.H * opts.E, stream));
   randUniform<Arch>(gateWeights, static_cast<size_t>(opts.H) * opts.E, rd(), minv, maxv, stream);
 
   Seeds seeds{};
@@ -463,7 +492,7 @@ void kickstart(const Options& opts) {
   if (world > 1) {
     // Rank 0 will generate all seeds and propagate to every rank
     // the weights need to be uniform across all ranks as each rank will do an independent check
-    // NVSHMEM init should have initialized MPI already
+    // SHMEM init should have initialized MPI already
     int isMPIInitialized = 0;
     MPI_Initialized(&isMPIInitialized);
     if (!isMPIInitialized) {
@@ -478,45 +507,45 @@ void kickstart(const Options& opts) {
   Element* expertUpV = nullptr;
   Element* expertDownWeights = nullptr;
   // allocate all expert weights since we need it for single-GPU correctness checks
-  CHECK_CUDA(cudaMallocAsync(&expertUpWeights, sizeof(Element) * opts.E * opts.H * opts.I, stream));
+  CHECK_CUDA(gpuMallocAsync(&expertUpWeights, sizeof(Element) * opts.E * opts.H * opts.I, stream));
   randUniform<Arch>(expertUpWeights, static_cast<size_t>(opts.E) * opts.H * opts.I, seeds.expertUp, minv, maxv, stream);
   if (mt == flashmoe::MLPMatmulType::gated) {
-    CHECK_CUDA(cudaMallocAsync(&expertUpV, sizeof(Element) * opts.E * opts.H * opts.I, stream));
+    CHECK_CUDA(gpuMallocAsync(&expertUpV, sizeof(Element) * opts.E * opts.H * opts.I, stream));
     randUniform<Arch>(expertUpV, static_cast<size_t>(opts.E) * opts.H * opts.I, seeds.expertUpV, minv, maxv, stream);
   }
-  CHECK_CUDA(cudaMallocAsync(&expertDownWeights, sizeof(Element) * opts.E * opts.I * opts.H, stream));
+  CHECK_CUDA(gpuMallocAsync(&expertDownWeights, sizeof(Element) * opts.E * opts.I * opts.H, stream));
   randUniform<Arch>(expertDownWeights, static_cast<size_t>(opts.E) * opts.H * opts.I, seeds.expertDown, minv, maxv, stream);
   using MT = MXE<Element>;
 
   Element* biasUp = nullptr;
   Element* biasUpV = nullptr;
-  CHECK_CUDA(cudaMallocAsync(&biasUp, sizeof(Element) * opts.E * opts.I, stream));
+  CHECK_CUDA(gpuMallocAsync(&biasUp, sizeof(Element) * opts.E * opts.I, stream));
   randUniform<Arch>(biasUp, static_cast<size_t>(opts.E) * opts.I, seeds.biasUp, minv, maxv, stream);
   if (mt == flashmoe::MLPMatmulType::gated) {
-    CHECK_CUDA(cudaMallocAsync(&biasUpV, sizeof(Element) * opts.E * opts.I, stream));
+    CHECK_CUDA(gpuMallocAsync(&biasUpV, sizeof(Element) * opts.E * opts.I, stream));
     randUniform<Arch>(biasUpV, static_cast<size_t>(opts.E) * opts.I, seeds.biasUpV, minv, maxv, stream);
   }
 
   Element* biasDown = nullptr;
-  CHECK_CUDA(cudaMallocAsync(&biasDown, sizeof(Element) * opts.E * opts.H, stream));
+  CHECK_CUDA(gpuMallocAsync(&biasDown, sizeof(Element) * opts.E * opts.H, stream));
   randUniform<Arch>(biasDown, static_cast<size_t>(opts.E) * opts.H, seeds.biasDown, minv, maxv, stream);
 
   int* expertCounts = nullptr;
-  CHECK_CUDA(cudaMallocAsync(&expertCounts, sizeof(int) * opts.E, stream));
+  CHECK_CUDA(gpuMallocAsync(&expertCounts, sizeof(int) * opts.E, stream));
 
   Element* moeOut = nullptr;
-  CHECK_CUDA(cudaMallocAsync(&moeOut, sizeof(Element) * opts.S * opts.H, stream));
+  CHECK_CUDA(gpuMallocAsync(&moeOut, sizeof(Element) * opts.S * opts.H, stream));
 
   Element* referenceInput;
-  CHECK_CUDA(cudaMallocAsync(&referenceInput, sizeof(Element) * roundEC * opts.H, stream));
+  CHECK_CUDA(gpuMallocAsync(&referenceInput, sizeof(Element) * roundEC * opts.H, stream));
   Element* referenceInterim0;
-  CHECK_CUDA(cudaMallocAsync(&referenceInterim0, sizeof(Element) * roundEC * opts.I, stream));
+  CHECK_CUDA(gpuMallocAsync(&referenceInterim0, sizeof(Element) * roundEC * opts.I, stream));
   Element* referenceInterim1;
-  CHECK_CUDA(cudaMallocAsync(&referenceInterim1, sizeof(Element) * roundEC * opts.H, stream));
+  CHECK_CUDA(gpuMallocAsync(&referenceInterim1, sizeof(Element) * roundEC * opts.H, stream));
   Element* referenceOut;
-  CHECK_CUDA(cudaMallocAsync(&referenceOut, sizeof(Element) * opts.S * opts.H, stream));
+  CHECK_CUDA(gpuMallocAsync(&referenceOut, sizeof(Element) * opts.S * opts.H, stream));
   if (opts.k > 1) {
-    CHECK_CUDA(cudaMemsetAsync(referenceOut, 0, sizeof(Element) * opts.S * opts.H, stream));
+    CHECK_CUDA(gpuMemsetAsync(referenceOut, 0, sizeof(Element) * opts.S * opts.H, stream));
   }
   const auto swishAlpha = random_float(minv, maxv, seeds.alpha);
   const auto swishBeta = random_float(minv, maxv, seeds.beta);
@@ -526,7 +555,7 @@ void kickstart(const Options& opts) {
     sizeof(Element), static_cast<uint>(opts.S), static_cast<uint>(opts.H), static_cast<uint>(opts.I), opts.EC,
     bM, bN0, bN1, bK0, bK1, threads,
     blocks, kernelSz, static_cast<uint16_t>(epRank), static_cast<uint16_t>(world),
-    static_cast<uint16_t>(nvshmem_my_pe()), static_cast<uint16_t>(opts.E),
+    static_cast<uint16_t>(flashmoe::shmem::my_pe()), static_cast<uint16_t>(opts.E),
     static_cast<uint16_t>(numLocalExperts), kernelTopo
   };
   const auto workspaceBytesMiB = static_cast<double>(flashmoe::getWorkspaceBytes(args)) / static_cast<double>(1024 * 1024);
@@ -596,15 +625,21 @@ void kickstart(const Options& opts) {
     }
   };
   flashMK(moeContext.topo, 1);
-  CHECK_CUDA(cudaPeekAtLastError());
+  CHECK_CUDA(gpuPeekAtLastError());
   // check correctness
+#if !defined(FLASHMOE_PLATFORM_HIP)
   using ActType = flashmoe::ActivationType<AccumType, act>::AT;
   reference<Config, mt, GEMM0Sz, GEMM1Sz, ActType, AccumType>(moeContext.tokenIndices, tokens,
     referenceInput, expertUpWeights, expertUpV, expertDownWeights, biasUp, biasUpV, biasDown,
     referenceInterim0, referenceInterim1, expertCounts, referenceOut,
     swishAlpha, swishBeta, opts.S, opts.H, opts.EC, opts.E, opts.I, opts.k, num_sms, stream);
-  CHECK_CUDA(cudaPeekAtLastError());
+  CHECK_CUDA(gpuPeekAtLastError());
+#endif
 
+#if defined(FLASHMOE_PLATFORM_HIP)
+  // HIP: skip single-GPU reference check (requires cublasdx); report N/A error %
+  const double ep = -1.0; // sentinel: correctness not checked on HIP
+#else
   auto tC = matx::make_tensor<MT>(reinterpret_cast<MT*>(moeOut), {static_cast<matx::index_t>(opts.S), static_cast<matx::index_t>(opts.H)});
   auto tRef = matx::make_tensor<MT>(reinterpret_cast<MT*>(referenceOut), tC.Shape());
   auto num_matches = matx::make_tensor<long int>({});
@@ -613,63 +648,70 @@ void kickstart(const Options& opts) {
   exec.sync();
   // calculate error percentage
   const auto ep =  (1.0 - (static_cast<double>(num_matches()) / static_cast<double>(tC.TotalSize()))) * 100;
-  cudaEvent_t start, stop;
-  CHECK_CUDA(cudaEventCreate(&start));
-  CHECK_CUDA(cudaEventCreate(&stop));
+#endif
+  gpuEvent_t start, stop;
+  CHECK_CUDA(gpuEventCreate(&start));
+  CHECK_CUDA(gpuEventCreate(&stop));
   float m_time_ms = 0.0f;
   if (opts.graph_launches > 0) {
     // use CUDA graphs with fused distributed MoE kernel
-    cudaGraph_t graph = nullptr;
-    cudaGraphExec_t graphExec = nullptr;
+    gpuGraph_t graph = nullptr;
+    gpuGraphExec_t graphExec = nullptr;
     // capture kernel launches
-    CHECK_CUDA(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+    CHECK_CUDA(gpuStreamBeginCapture(stream, gpuStreamCaptureModeGlobal));
     flashMK(moeContext.topo, opts.runs);
-    CHECK_CUDA(cudaStreamEndCapture(stream, &graph));
+    CHECK_CUDA(gpuStreamEndCapture(stream, &graph));
 
-    CHECK_CUDA(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
-    CHECK_CUDA(cudaStreamSynchronize(stream));
+    CHECK_CUDA(gpuGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+    CHECK_CUDA(gpuStreamSynchronize(stream));
 
     // warmup
     for (int i = 0; i < opts.graph_launches; ++i) {
-      CHECK_CUDA(cudaGraphLaunch(graphExec, stream));
+      CHECK_CUDA(gpuGraphLaunch(graphExec, stream));
     }
-    CHECK_CUDA(cudaStreamSynchronize(stream));
+    CHECK_CUDA(gpuStreamSynchronize(stream));
 
     // time total launches = opts.runs * opts.graph_launches
     const auto total_launches = opts.runs * opts.graph_launches;
 
-    CHECK_CUDA(cudaEventRecord(start, stream));
+    CHECK_CUDA(gpuEventRecord(start, stream));
     for (int i = 0; i < opts.graph_launches; ++i) {
-      CHECK_CUDA(cudaGraphLaunch(graphExec, stream));
+      CHECK_CUDA(gpuGraphLaunch(graphExec, stream));
     }
-    CHECK_CUDA(cudaEventRecord(stop, stream));
-    CHECK_CUDA(cudaEventSynchronize(stop));
+    CHECK_CUDA(gpuEventRecord(stop, stream));
+    CHECK_CUDA(gpuEventSynchronize(stop));
 
     float total_ms = 0.0f;
-    CHECK_CUDA(cudaEventElapsedTime(&total_ms, start, stop));
+    CHECK_CUDA(gpuEventElapsedTime(&total_ms, start, stop));
 
     // per-iteration time (each launch is one iteration)
     m_time_ms = total_ms / static_cast<float>(total_launches);
 
-    CHECK_CUDA(cudaGraphExecDestroy(graphExec));
-    CHECK_CUDA(cudaGraphDestroy(graph));
+    CHECK_CUDA(gpuGraphExecDestroy(graphExec));
+    CHECK_CUDA(gpuGraphDestroy(graph));
   }
   else {
     // benchmark distributed moe fused kernel
     flashMK(moeContext.topo, opts.warmup);
-    CHECK_CUDA(cudaStreamSynchronize(stream));
-    cudaEventRecord(start, stream);
+    CHECK_CUDA(gpuStreamSynchronize(stream));
+    gpuEventRecord(start, stream);
     flashMK(moeContext.topo, opts.runs);
-    cudaEventRecord(stop, stream);
-    CHECK_CUDA(cudaEventSynchronize(stop));
+    gpuEventRecord(stop, stream);
+    CHECK_CUDA(gpuEventSynchronize(stop));
     float m_ms = 0;
-    CHECK_CUDA(cudaEventElapsedTime(&m_ms, start, stop));
+    CHECK_CUDA(gpuEventElapsedTime(&m_ms, start, stop));
     m_time_ms = m_ms / static_cast<float>(opts.runs);
   }
   constexpr auto es = element_string<Element>();
+#if defined(FLASHMOE_PLATFORM_HIP)
+  hipDeviceProp_t prop{};
+  CHECK_CUDA(hipGetDeviceProperties(&prop, devId));
+  const auto sms = "gfx" + std::to_string(Arch);
+#else
   cudaDeviceProp prop{};
-  CHECK_CUDA(cudaGetDeviceProperties(&prop, devId)); // Get properties for current rank
+  CHECK_CUDA(cudaGetDeviceProperties(&prop, devId));
   const auto sms = "sm_" + std::to_string(Arch / 10);
+#endif
   printf("%d, %s, %lu, %lu, %lu, %lu, %lu, %f, %lf, %lu, %s, %s, %s, %s, %d, %d, %d, %d, %d, %d, %d, %d, %d, %.1e, %.1e, %d, %d, %d, %lf\n",
          epRank, es, opts.S, opts.H, opts.I, opts.E, opts.k, m_time_ms, ep, opts.EC, prop.name, sms.c_str(),
          kernelTopo == flashmoe::Topology::MIXED ? "MultiNode" : "SingleNode",
@@ -679,27 +721,27 @@ void kickstart(const Options& opts) {
   // finalize
   flashmoe::finalizeGate(gateCtx, stream);
   flashmoe::finalize(moeContext, stream);
-  CHECK_CUDA(cudaFreeAsync(tokens, stream));
-  CHECK_CUDA(cudaFreeAsync(gateWeights, stream));
-  CHECK_CUDA(cudaFreeAsync(expertUpWeights, stream));
+  CHECK_CUDA(gpuFreeAsync(tokens, stream));
+  CHECK_CUDA(gpuFreeAsync(gateWeights, stream));
+  CHECK_CUDA(gpuFreeAsync(expertUpWeights, stream));
   if constexpr (mt == flashmoe::MLPMatmulType::gated) {
-    cudaFreeAsync(expertUpV, stream);
-    cudaFreeAsync(biasUpV, stream);
+    gpuFreeAsync(expertUpV, stream);
+    gpuFreeAsync(biasUpV, stream);
   }
-  CHECK_CUDA(cudaFreeAsync(expertDownWeights, stream));
-  CHECK_CUDA(cudaFreeAsync(biasUp, stream));
-  CHECK_CUDA(cudaFreeAsync(biasDown, stream));
-  CHECK_CUDA(cudaFreeAsync(expertCounts, stream));
-  CHECK_CUDA(cudaFreeAsync(moeOut, stream));
-  CHECK_CUDA(cudaFreeAsync(referenceInput, stream));
-  CHECK_CUDA(cudaFreeAsync(referenceInterim0, stream));
-  CHECK_CUDA(cudaFreeAsync(referenceInterim1, stream));
-  CHECK_CUDA(cudaFreeAsync(referenceOut, stream));
-  CHECK_CUDA(cudaPeekAtLastError());
-  CHECK_CUDA(cudaStreamSynchronize(stream));
-  cudaEventDestroy(start);cudaEventDestroy(stop);
-  nvshmem_finalize();
-  cudaStreamDestroy(stream);
+  CHECK_CUDA(gpuFreeAsync(expertDownWeights, stream));
+  CHECK_CUDA(gpuFreeAsync(biasUp, stream));
+  CHECK_CUDA(gpuFreeAsync(biasDown, stream));
+  CHECK_CUDA(gpuFreeAsync(expertCounts, stream));
+  CHECK_CUDA(gpuFreeAsync(moeOut, stream));
+  CHECK_CUDA(gpuFreeAsync(referenceInput, stream));
+  CHECK_CUDA(gpuFreeAsync(referenceInterim0, stream));
+  CHECK_CUDA(gpuFreeAsync(referenceInterim1, stream));
+  CHECK_CUDA(gpuFreeAsync(referenceOut, stream));
+  CHECK_CUDA(gpuPeekAtLastError());
+  CHECK_CUDA(gpuStreamSynchronize(stream));
+  gpuEventDestroy(start);gpuEventDestroy(stop);
+  flashmoe::shmem::finalize();
+  gpuStreamDestroy(stream);
 }
 
 __host__ __forceinline__
@@ -777,10 +819,17 @@ void drive(const int argc, char** argv) {
   };
 
   using Element = __half;
+#if defined(FLASHMOE_PLATFORM_HIP)
+  static_assert(cuda::std::is_same_v<Element, __half> ||
+    cuda::std::is_same_v<Element, hip_bfloat16> ||
+    cuda::std::is_same_v<Element, float> ||
+    cuda::std::is_same_v<Element, double>);
+#else
   static_assert(cuda::std::is_same_v<Element, __half> ||
     cuda::std::is_same_v<Element, __nv_bfloat16> ||
     cuda::std::is_same_v<Element, float> ||
     cuda::std::is_same_v<Element, double>);
+#endif
 
   using AccumType = cuda::std::conditional_t<cuda::std::is_same_v<Element, double>, double, float>;
   // below values are static to minimize instantiated templates.
@@ -867,4 +916,4 @@ int main(const int argc, char** argv) {
   drive(argc, argv);
 }
 
-#endif // FLASHMOE_PLATFORM_HIP
+#endif // FLASHMOE_PLATFORM_HIP && !FLASHMOE_HAS_SHMEM

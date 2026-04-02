@@ -47,6 +47,10 @@ namespace flashmoe {
              (!cuda::std::is_same_v<T, unsigned short int> || scope == cuda::thread_scope_device)
   __device__ __forceinline__
   T atomicTAS(T *__restrict__ const&addr) {
+#if defined(FLASHMOE_PLATFORM_HIP)
+    // HIP does not support atomicCAS_block; use device-scope atomicCAS for all scopes
+    return atomicCAS(addr, 0U, 1U);
+#else
     if constexpr (scope == cuda::thread_scope_block || scope == cuda::thread_scope_thread) {
       return atomicCAS_block(addr, 0U, 1U);
     } else if constexpr (scope == cuda::thread_scope_system) {
@@ -54,6 +58,7 @@ namespace flashmoe {
     } else {
       return atomicCAS(addr, 0U, 1U);
     }
+#endif
   }
 
   enum InitState: int {
