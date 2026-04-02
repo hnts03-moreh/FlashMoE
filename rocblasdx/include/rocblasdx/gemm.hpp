@@ -642,11 +642,202 @@ void copy(int tid, const SrcTensor& src, DstTensor& dst) {
 }
 
 // =====================================================================
-// copy_fragment — fragment <-> smem/gmem copy
+// copy_fragment — fragment <-> smem/gmem copy (MFMA-layout-aware)
 // =====================================================================
-// The accumulator parameter provides the thread-to-element mapping.
-// In our implementation, thread tid owns elements at
-// positions [tid, tid + blockDim.x, tid + 2*blockDim.x, ...] in the tile.
+//
+// On MFMA-capable architectures (gfx9xx), the accumulator fragment is
+// stored in MFMA register layout, NOT simple striped layout.
+// Each thread's fragment elements map to specific (row, col) positions
+// determined by the MFMA instruction's output register distribution.
+//
+// Fragment element i maps to:
+//   tile_local = i / c_per_thread (which MFMA sub-tile within this wave)
+//   vgpr       = i % c_per_thread (which register within that sub-tile)
+//   tile_global = wave_id + tile_local * num_waves (striped tile assignment)
+//   tm = tile_global / mfma_tiles_n
+//   tn = tile_global % mfma_tiles_n
+//   row = tm * mfma_m + MfmaLayout::row(lane_id, vgpr)
+//   col = tn * mfma_n + MfmaLayout::col(lane_id)
+
+namespace detail {
+
+// Resolve BLAS type: BlasBag → BlasExecution via ::resolved, or pass through
+template <typename T, typename = void>
+struct resolve_blas { using type = T; };
+template <typename T>
+struct resolve_blas<T, std::void_t<typename T::resolved>> { using type = typename T::resolved; };
+template <typename T>
+using resolve_blas_t = typename resolve_blas<T>::type;
+
+// Helper: given BLAS parameters, compute the (row, col) for fragment element i
+// Returns true if the position is valid (within the tile), false for inactive threads/tiles
+template <typename BLAS_>
+__device__ __forceinline__
+bool mfma_frag_to_rc(int i, int& row, int& col) {
+    using BLAS = resolve_blas_t<BLAS_>;
+    using MfmaInstr = typename BLAS::MfmaInstr;
+    using Layout = mfma::MfmaOutputLayout<MfmaInstr>;
+    constexpr int c_per_thread = MfmaInstr::c_per_thread;
+    constexpr int mfma_m = MfmaInstr::M;
+    constexpr int mfma_n = MfmaInstr::N;
+    constexpr int mfma_tiles_m = BLAS::mfma_tiles_m;
+    constexpr int mfma_tiles_n = BLAS::mfma_tiles_n;
+    constexpr int total_mfma_tiles = mfma_tiles_m * mfma_tiles_n;
+    constexpr int num_waves = BLAS::num_waves;
+    constexpr int wavefront_size = 64;
+
+    const int lane_id = threadIdx.x % wavefront_size;
+    const int wave_id = threadIdx.x / wavefront_size;
+
+    int tile_local = i / c_per_thread;
+    int vgpr = i % c_per_thread;
+    int tile_global = wave_id + tile_local * num_waves;
+
+    // Check if this tile exists (some waves may have fewer tiles)
+    if (tile_global >= total_mfma_tiles) {
+        row = -1; col = -1;
+        return false;
+    }
+
+    int tm = tile_global / mfma_tiles_n;
+    int tn = tile_global % mfma_tiles_n;
+
+    row = tm * mfma_m + Layout::row(lane_id, vgpr);
+    col = tn * mfma_n + Layout::col(lane_id);
+    return true;
+}
+
+// Check if BLAS type uses MFMA (has MfmaInstr member)
+template <typename T, typename = void>
+struct has_mfma : std::false_type {};
+template <typename T>
+struct has_mfma<T, std::void_t<typename T::MfmaInstr>> : std::true_type {};
+
+// Check if a type is a BlasExecution (for SFINAE)
+template <typename T>
+concept IsBlasExecution = requires { typename T::MfmaInstr; T::mfma_tiles_n; T::num_waves; };
+} // namespace detail
+
+// -------------------------------------------------------------------
+// Fragment -> SmemTensor (rmem -> smem) — MFMA-aware
+// -------------------------------------------------------------------
+// The accumulator carries BLAS type info via its size which encodes
+// the MFMA tiling. We use a BLAS tag overload for MFMA-aware copy.
+
+// MFMA-aware overload: uses BLAS type to compute correct (row, col)
+template <int Align, typename BLAS, typename FT, int FN, typename ST, int R, int C, int S>
+__device__ __forceinline__
+void copy_fragment_mfma(const Fragment<FT, FN>& frag,
+                        SmemTensor<ST, R, C, S>& smem) {
+    #pragma unroll
+    for (int i = 0; i < FN; ++i) {
+        int row, col;
+        detail::mfma_frag_to_rc<BLAS>(i, row, col);
+        if (row < R && col < C)
+            smem(row, col) = static_cast<ST>(frag(i));
+    }
+}
+
+// MFMA-aware overload: SmemTensor -> Fragment
+template <int Align, typename BLAS, typename ST, int R, int C, int S, typename FT, int FN>
+__device__ __forceinline__
+void copy_fragment_mfma(const SmemTensor<ST, R, C, S>& smem,
+                        Fragment<FT, FN>& frag) {
+    #pragma unroll
+    for (int i = 0; i < FN; ++i) {
+        int row, col;
+        detail::mfma_frag_to_rc<BLAS>(i, row, col);
+        if (row < R && col < C)
+            frag(i) = static_cast<FT>(smem(row, col));
+    }
+}
+
+// MFMA-aware overload: CuTe/GmemTileView Tensor -> Fragment
+template <int Align, typename BLAS, typename SrcTensor, typename FT, int FN>
+__device__ __forceinline__
+void copy_fragment_mfma(const SrcTensor& src, Fragment<FT, FN>& frag) {
+    #pragma unroll
+    for (int i = 0; i < FN; ++i) {
+        int row, col;
+        if (detail::mfma_frag_to_rc<BLAS>(i, row, col))
+            frag(i) = static_cast<FT>(src(row, col));
+    }
+}
+
+// MFMA-aware overload: Fragment -> CuTe/GmemTileView Tensor
+template <int Align, typename BLAS, typename FT, int FN, typename DstTensor>
+__device__ __forceinline__
+void copy_fragment_mfma(const Fragment<FT, FN>& frag, DstTensor& dst) {
+    #pragma unroll
+    for (int i = 0; i < FN; ++i) {
+        int row, col;
+        if (detail::mfma_frag_to_rc<BLAS>(i, row, col))
+            dst(row, col) = static_cast<std::decay_t<decltype(dst(0, 0))>>(frag(i));
+    }
+}
+
+// -------------------------------------------------------------------
+// Unified copy_fragment — auto-detects MFMA on gfx9 architectures
+// -------------------------------------------------------------------
+// On MFMA-capable HW, uses MFMA register layout mapping.
+// The BLAS type is derived from the accumulator (which is a Fragment
+// whose size encodes the tiling). The third parameter (accumulator)
+// carries the layout info implicitly.
+//
+// Strategy: We derive the MFMA parameters from the SmemTensor dimensions
+// (R=tile_m, C=tile_n) and the thread count. This avoids changing call sites.
+
+namespace detail {
+// Select MFMA instruction from element type and tile dims
+template <typename Element, int TileM, int TileN>
+using auto_mfma_t = mfma::select_mfma_t<Element, TileM, TileN>;
+
+// Auto-derive MFMA tile counts and wave count
+template <typename MfmaInstr, int TileM, int TileN, int Threads>
+struct MfmaParams {
+    static constexpr int mfma_m = MfmaInstr::M;
+    static constexpr int mfma_n = MfmaInstr::N;
+    static constexpr int c_per_thread = MfmaInstr::c_per_thread;
+    static constexpr int mfma_tiles_m = TileM / mfma_m;
+    static constexpr int mfma_tiles_n = TileN / mfma_n;
+    static constexpr int num_waves = Threads / 64;
+};
+
+// Compute (row, col) from fragment index using MFMA layout
+// TileM, TileN = overall tile dims; returns false for invalid positions
+template <typename Element, int TileM, int TileN>
+__device__ __forceinline__
+bool auto_mfma_frag_to_rc(int i, int& row, int& col) {
+    using MfmaInstr = auto_mfma_t<Element, TileM, TileN>;
+    using Layout = mfma::MfmaOutputLayout<MfmaInstr>;
+    constexpr int c_per_thread = MfmaInstr::c_per_thread;
+    constexpr int mfma_m = MfmaInstr::M;
+    constexpr int mfma_n = MfmaInstr::N;
+    constexpr int mfma_tiles_m = TileM / mfma_m;
+    constexpr int mfma_tiles_n = TileN / mfma_n;
+    constexpr int total_mfma_tiles = mfma_tiles_m * mfma_tiles_n;
+
+    const int lane_id = threadIdx.x % 64;
+    const int wave_id = threadIdx.x / 64;
+    const int num_waves = static_cast<int>(blockDim.x) / 64;
+
+    int tile_local = i / c_per_thread;
+    int vgpr = i % c_per_thread;
+    int tile_global = wave_id + tile_local * num_waves;
+
+    if (tile_global >= total_mfma_tiles) {
+        row = -1; col = -1;
+        return false;
+    }
+
+    int tm = tile_global / mfma_tiles_n;
+    int tn = tile_global % mfma_tiles_n;
+
+    row = tm * mfma_m + Layout::row(lane_id, vgpr);
+    col = tn * mfma_n + Layout::col(lane_id);
+    return true;
+}
+} // namespace detail
 
 // Fragment -> SmemTensor (rmem -> smem)
 template <int Align, typename FT, int FN, typename ST, int R, int C, int S>
@@ -654,6 +845,17 @@ __device__ __forceinline__
 void copy_fragment(const Fragment<FT, FN>& frag,
                    SmemTensor<ST, R, C, S>& smem,
                    const auto& /* accumulator */) {
+#if defined(__gfx9__) || defined(__gfx940__) || defined(__gfx941__) || defined(__gfx942__)
+    // MFMA path: use hardware register layout
+    #pragma unroll
+    for (int i = 0; i < FN; ++i) {
+        int row, col;
+        detail::auto_mfma_frag_to_rc<ST, R, C>(i, row, col);
+        if (row < R && col < C)
+            smem(row, col) = static_cast<ST>(frag(i));
+    }
+#else
+    // Scalar path: striped layout
     const int tid = threadIdx.x;
     const int threads = blockDim.x;
     constexpr int total = R * C;
@@ -661,11 +863,10 @@ void copy_fragment(const Fragment<FT, FN>& frag,
     for (int i = 0; i < FN; ++i) {
         int flat = tid + i * threads;
         if (flat < total) {
-            int row = flat / C;
-            int col = flat % C;
-            smem(row, col) = static_cast<ST>(frag(i));
+            smem(flat / C, flat % C) = static_cast<ST>(frag(i));
         }
     }
+#endif
 }
 
 // SmemTensor -> Fragment (smem -> rmem)
@@ -674,6 +875,15 @@ __device__ __forceinline__
 void copy_fragment(const SmemTensor<ST, R, C, S>& smem,
                    Fragment<FT, FN>& frag,
                    const auto& /* accumulator */) {
+#if defined(__gfx9__) || defined(__gfx940__) || defined(__gfx941__) || defined(__gfx942__)
+    #pragma unroll
+    for (int i = 0; i < FN; ++i) {
+        int row, col;
+        detail::auto_mfma_frag_to_rc<ST, R, C>(i, row, col);
+        if (row < R && col < C)
+            frag(i) = static_cast<FT>(smem(row, col));
+    }
+#else
     const int tid = threadIdx.x;
     const int threads = blockDim.x;
     constexpr int total = R * C;
@@ -681,14 +891,13 @@ void copy_fragment(const SmemTensor<ST, R, C, S>& smem,
     for (int i = 0; i < FN; ++i) {
         int flat = tid + i * threads;
         if (flat < total) {
-            int row = flat / C;
-            int col = flat % C;
-            frag(i) = static_cast<FT>(smem(row, col));
+            frag(i) = static_cast<FT>(smem(flat / C, flat % C));
         }
     }
+#endif
 }
 
-// CuTe Tensor -> Fragment (gmem/smem -> rmem)
+// Generic Tensor -> Fragment (gmem/smem -> rmem) — uses flat/striped indexing
 template <int Align, typename SrcTensor, typename FT, int FN>
 __device__ __forceinline__
 void copy_fragment(const SrcTensor& src, Fragment<FT, FN>& frag, const auto&)
@@ -703,7 +912,7 @@ void copy_fragment(const SrcTensor& src, Fragment<FT, FN>& frag, const auto&)
     }
 }
 
-// Fragment -> CuTe Tensor (rmem -> smem/gmem)
+// Generic Fragment -> Tensor (rmem -> smem/gmem) — uses flat/striped indexing
 template <int Align, typename FT, int FN, typename DstTensor>
 __device__ __forceinline__
 void copy_fragment(const Fragment<FT, FN>& frag, DstTensor& dst, const auto&)

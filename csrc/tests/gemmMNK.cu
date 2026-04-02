@@ -177,7 +177,7 @@ void driver(const int& M, const int& N, const int& K, const float& rtol, const f
     >;
     auto kernel = gk<TileGEMM, Act, Element, ElementC>;
     int bps = 0;
-    constexpr auto sharedSize = bK * pipeStages * (bM + bN) * sizeof(Element);
+    constexpr auto sharedSize = TileGEMM::SharedSizeAB::value;
     CHECK_CUDA(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, sharedSize));
     CHECK_CUDA(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel, threads, sharedSize));
     const int blocks = min((M / bM) * (N / bN), bps * NUM_SMS);
@@ -264,7 +264,9 @@ int main(const int argc, char** argv) {
 }
 
 #else
-// HIP: kernel-only benchmark
+// HIP: kernel benchmark + host CPU reference for accuracy verification
+#include "host_reference.cuh"
+
 template<int Arch, int bM, int bN, int bK, int pipeStages, typename AccumType, typename Element, typename ElementC>
 __host__ __forceinline__
 void driver(const int& M, const int& N, const int& K, const float& rtol, const float& atol, gpuStream_t stream) {
@@ -284,7 +286,7 @@ void driver(const int& M, const int& N, const int& K, const float& rtol, const f
     >;
     auto kernel = gk<TileGEMM, Act, Element, ElementC>;
     int bps = 0;
-    constexpr auto sharedSize = bK * pipeStages * (bM + bN) * sizeof(Element);
+    constexpr auto sharedSize = TileGEMM::SharedSizeAB::value;
     CHECK_CUDA(gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, sharedSize));
     CHECK_CUDA(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel, threads, sharedSize));
     const int blocks = cute::min((M / bM) * (N / bN), bps * NUM_SMS);
@@ -295,6 +297,26 @@ void driver(const int& M, const int& N, const int& K, const float& rtol, const f
     randUniform<Arch>(b, N * K, rd(), min_v, max_v, stream);
     randUniform<Arch>(bias, N, rd(), min_v, max_v, stream);
 
+    // Run kernel once for accuracy check
+    gk<TileGEMM, Act><<<blocks, threads, sharedSize, stream>>>(a, b, c, bias, M, N, K);
+    CHECK_CUDA(gpuStreamSynchronize(stream));
+
+    // Copy to host for CPU reference comparison
+    const size_t sz_a = static_cast<size_t>(M) * K;
+    const size_t sz_b = static_cast<size_t>(N) * K;
+    const size_t sz_c = static_cast<size_t>(M) * N;
+    std::vector<Element> h_a(sz_a), h_b(sz_b);
+    std::vector<ElementC> h_bias(N), h_c(sz_c), h_c_ref(sz_c);
+    CHECK_CUDA(hipMemcpy(h_a.data(), a, sz_a * sizeof(Element), hipMemcpyDeviceToHost));
+    CHECK_CUDA(hipMemcpy(h_b.data(), b, sz_b * sizeof(Element), hipMemcpyDeviceToHost));
+    CHECK_CUDA(hipMemcpy(h_bias.data(), bias, N * sizeof(ElementC), hipMemcpyDeviceToHost));
+    CHECK_CUDA(hipMemcpy(h_c.data(), c, sz_c * sizeof(ElementC), hipMemcpyDeviceToHost));
+
+    // CPU reference: SiLu(A @ B.T + bias)
+    host_ref::gemm_bias_act<host_ref::HostSiLu>(h_a.data(), h_b.data(), h_bias.data(), h_c_ref.data(), M, N, K);
+    const double error_pct = host_ref::compare_isclose(h_c.data(), h_c_ref.data(), M * N, rtol, atol);
+
+    // Benchmark
     constexpr auto runs = 128;
     constexpr auto warmup = 32;
     for (int i = 0; i < warmup; ++i)
@@ -311,9 +333,9 @@ void driver(const int& M, const int& N, const int& K, const float& rtol, const f
     float k_ms = 0;
     CHECK_CUDA(gpuEventElapsedTime(&k_ms, start, stop));
     CHECK_CUDA(gpuPeekAtLastError());
-    printf("%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %.1e, %.1e, n/a, %f, n/a\n",
+    printf("%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %.1e, %.1e, %lf, %f, n/a\n",
         M, N, K, bM, bN, bK, pipeStages, threads, bps, NUM_SMS, blocks, rtol, atol,
-        k_ms / static_cast<float>(runs));
+        error_pct, k_ms / static_cast<float>(runs));
     gpuEventDestroy(start);
     gpuEventDestroy(stop);
     gpuFreeAsync(a, stream);

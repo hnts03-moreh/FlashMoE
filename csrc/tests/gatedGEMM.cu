@@ -302,7 +302,9 @@ int main(const int argc, char **argv) {
 }
 
 #else
-// HIP: kernel-only benchmark (no MatX)
+// HIP: kernel benchmark + host CPU reference for accuracy verification
+#include "host_reference.cuh"
+
 template<int bM, int bN, int bK, int pipeStages, typename AccumType, typename Element, typename ElementC>
 __host__ __forceinline__
 void driver(const int &M, const int &N, const int &K, const float &rtol, const float &atol, gpuStream_t stream) {
@@ -337,6 +339,32 @@ void driver(const int &M, const int &N, const int &K, const float &rtol, const f
   randUniform<FLASHMOE_ARCH>(biasV, N, rd(), min_v, max_v, stream);
   const auto swishAlpha = static_cast<AccumType>(random_float(min_v, max_v, rd()));
   const auto swishBeta = static_cast<AccumType>(random_float(min_v, max_v, rd()));
+
+  // Run kernel once for accuracy check
+  gk<TileGEMM, Act><<<blocks, threads, totalSharedSize, stream>>>(a, b, bV, c, bias, biasV, swishAlpha, swishBeta, M, N, K);
+  CHECK_CUDA(gpuStreamSynchronize(stream));
+
+  // Copy to host for CPU reference
+  const size_t sz_a = static_cast<size_t>(M) * K;
+  const size_t sz_b = static_cast<size_t>(N) * K;
+  const size_t sz_c = static_cast<size_t>(M) * N;
+  std::vector<Element> h_a(sz_a), h_b(sz_b), h_bV(sz_b);
+  std::vector<ElementC> h_bias(N), h_biasV(N), h_c(sz_c), h_c_ref(sz_c);
+  CHECK_CUDA(hipMemcpy(h_a.data(), a, sz_a * sizeof(Element), hipMemcpyDeviceToHost));
+  CHECK_CUDA(hipMemcpy(h_b.data(), b, sz_b * sizeof(Element), hipMemcpyDeviceToHost));
+  CHECK_CUDA(hipMemcpy(h_bV.data(), bV, sz_b * sizeof(Element), hipMemcpyDeviceToHost));
+  CHECK_CUDA(hipMemcpy(h_bias.data(), bias, N * sizeof(ElementC), hipMemcpyDeviceToHost));
+  CHECK_CUDA(hipMemcpy(h_biasV.data(), biasV, N * sizeof(ElementC), hipMemcpyDeviceToHost));
+  CHECK_CUDA(hipMemcpy(h_c.data(), c, sz_c * sizeof(ElementC), hipMemcpyDeviceToHost));
+
+  // CPU reference: swishAlpha * SiLu(swishBeta * (A@B.T + bias)) * (A@BV.T + biasV)
+  host_ref::gated_gemm_ref<host_ref::HostSiLu>(
+      h_a.data(), h_b.data(), h_bV.data(), h_bias.data(), h_biasV.data(),
+      h_c_ref.data(), M, N, K,
+      static_cast<float>(swishAlpha), static_cast<float>(swishBeta));
+  const double error_pct = host_ref::compare_isclose(h_c.data(), h_c_ref.data(), M * N, rtol, atol);
+
+  // Benchmark
   constexpr auto runs = 128; constexpr auto warmup = 32;
   for (int i = 0; i < warmup; ++i) {
     gk<TileGEMM, Act><<<blocks, threads, totalSharedSize, stream>>>(a, b, bV, c, bias, biasV, swishAlpha, swishBeta, M, N, K);
@@ -352,9 +380,9 @@ void driver(const int &M, const int &N, const int &K, const float &rtol, const f
   CHECK_CUDA(gpuEventSynchronize(stop));
   float k_ms = 0;
   CHECK_CUDA(gpuEventElapsedTime(&k_ms, start, stop));
-  printf("%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %.1e, %.1e, n/a, %f, n/a\n",
+  printf("%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %.1e, %.1e, %lf, %f, n/a\n",
          M, N, K, bM, bN, bK, pipeStages, threads, bps, NUM_SMS, blocks, rtol, atol,
-         k_ms / static_cast<float>(runs));
+         error_pct, k_ms / static_cast<float>(runs));
   gpuEventDestroy(start); gpuEventDestroy(stop);
   gpuFreeAsync(a, stream); gpuFreeAsync(b, stream); gpuFreeAsync(bV, stream);
   gpuFreeAsync(c, stream); gpuFreeAsync(bias, stream); gpuFreeAsync(biasV, stream);

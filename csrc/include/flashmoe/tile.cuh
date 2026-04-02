@@ -343,6 +343,110 @@ namespace flashmoe::tile
       static constexpr layout_type layout() { return {}; }
   };
 
+} // namespace flashmoe::tile (temporarily close)
+
+// MFMA-aware copy_fragment overloads for GmemTileView
+// These must be in the rocblasdx namespace so flashmoe_blas::copy_fragment finds them.
+namespace rocblasdx {
+
+// GmemTileView -> Fragment (MFMA-aware bias/data loading)
+template <int Align, typename Element, int TileR, int TileC,
+          rocblasdx::arrangement ar, typename FT, int FN>
+__device__ __forceinline__
+void copy_fragment(const flashmoe::tile::GmemTileView<Element, TileR, TileC, ar>& src,
+                   Fragment<FT, FN>& frag, const auto&) {
+#if defined(__gfx9__) || defined(__gfx940__) || defined(__gfx941__) || defined(__gfx942__)
+    #pragma unroll
+    for (int i = 0; i < FN; ++i) {
+        int row, col;
+        if (detail::auto_mfma_frag_to_rc<std::remove_const_t<Element>, TileR, TileC>(i, row, col))
+            frag(i) = static_cast<FT>(src(row, col));
+    }
+#else
+    const int tid = threadIdx.x;
+    const int threads = blockDim.x;
+    #pragma unroll
+    for (int i = 0; i < FN; ++i) {
+        int flat = tid + i * threads;
+        frag(i) = static_cast<FT>(src(flat));
+    }
+#endif
+}
+
+// GmemTileView (const Element) -> Fragment
+template <int Align, typename Element, int TileR, int TileC,
+          rocblasdx::arrangement ar, typename FT, int FN>
+__device__ __forceinline__
+void copy_fragment(const flashmoe::tile::GmemTileView<const Element, TileR, TileC, ar>& src,
+                   Fragment<FT, FN>& frag, const auto&) {
+#if defined(__gfx9__) || defined(__gfx940__) || defined(__gfx941__) || defined(__gfx942__)
+    #pragma unroll
+    for (int i = 0; i < FN; ++i) {
+        int row, col;
+        if (detail::auto_mfma_frag_to_rc<Element, TileR, TileC>(i, row, col))
+            frag(i) = static_cast<FT>(src(row, col));
+    }
+#else
+    const int tid = threadIdx.x;
+    const int threads = blockDim.x;
+    #pragma unroll
+    for (int i = 0; i < FN; ++i) {
+        int flat = tid + i * threads;
+        frag(i) = static_cast<FT>(src(flat));
+    }
+#endif
+}
+
+// Fragment -> GmemTileView (MFMA-aware result writing)
+template <int Align, typename FT, int FN, typename Element, int TileR, int TileC,
+          rocblasdx::arrangement ar>
+__device__ __forceinline__
+void copy_fragment(const rocblasdx::Fragment<FT, FN>& frag,
+                   flashmoe::tile::GmemTileView<Element, TileR, TileC, ar>& dst,
+                   const auto&) {
+#if defined(__gfx9__) || defined(__gfx940__) || defined(__gfx941__) || defined(__gfx942__)
+    #pragma unroll
+    for (int i = 0; i < FN; ++i) {
+        int row, col;
+        if (detail::auto_mfma_frag_to_rc<std::remove_const_t<Element>, TileR, TileC>(i, row, col))
+            dst(row, col) = static_cast<Element>(frag(i));
+    }
+#else
+    const int tid = threadIdx.x;
+    const int threads = blockDim.x;
+    #pragma unroll
+    for (int i = 0; i < FN; ++i) {
+        int flat = tid + i * threads;
+        dst(flat) = static_cast<Element>(frag(i));
+    }
+#endif
+}
+
+// SmemTensor -> GmemTileView copy (cooperative, uses 2D indexing to handle stride padding)
+template <typename BLAS, int Align,
+          typename SrcElement, int R, int C, int S,
+          typename DstElement, int TileR, int TileC, rocblasdx::arrangement ar>
+__device__ __forceinline__
+void copy(const rocblasdx::SmemTensor<SrcElement, R, C, S>& src,
+          flashmoe::tile::GmemTileView<DstElement, TileR, TileC, ar>& dst) {
+    constexpr int threads = BLAS::max_threads_per_block;
+    const int tid = threadIdx.x;
+    constexpr int total = R * C;
+    constexpr int per = (total + threads - 1) / threads;
+    for (int i = 0; i < per; ++i) {
+        int flat = tid + i * threads;
+        if (flat < total) {
+            int row = flat / C;
+            int col = flat % C;
+            dst(row, col) = static_cast<DstElement>(src(row, col));
+        }
+    }
+}
+
+} // namespace rocblasdx
+
+namespace flashmoe::tile {
+
   template <int tRow, int tCol, int ar_int, typename Element, typename TileCoord>
   __device__ __forceinline__
   auto get(const Element* __restrict__ const& p, const int& nRow, const int& nCol,
@@ -512,7 +616,11 @@ namespace flashmoe::tile
     using Threads = cute::Int<threads>;
     using TileShape = cute::Shape<cute::Int<bM>, cute::Int<bN>, cute::Int<bK>>;
     using GeneralAlignment = cute::Int<cute::max(aAlignment, bAlignment, cAlignment)>;
-    using SharedSizeAB = cute::Int<cutlass::round_up(bK * pipeStages * (bM + bN) * sizeof(Element), GeneralAlignment::value)>;
+    // SharedSizeAB must account for LDS bank-conflict padding in SmemLayout strides
+    using SharedSizeAB = cute::Int<cutlass::round_up(
+        (flashmoe_blas::cosize(BLAS::suggest_layout_smem_a()) +
+         flashmoe_blas::cosize(BLAS::suggest_layout_smem_b())) * pipeStages * sizeof(Element),
+        GeneralAlignment::value)>;
     using SharedSizeC = cute::Int<cutlass::round_up(bM * bN * sizeof(Element), GeneralAlignment::value)>;
     using CArr = cute::C<cr>;
     using AAlign = cute::Int<aAlignment>;
@@ -548,14 +656,45 @@ namespace flashmoe::tile
       // ROCm: no async copy pipeline; synchronous loads
       // Simple mainloop without pipelining
       for (int kStage = 0; kStage < tilesK; ++kStage) {
-        // Copy A and B tiles to shared memory
-        // Direct element-wise copy (synchronous)
-        flashmoe_blas::copy<BLAS, aAlignment>(
-          flashmoe_blas::make_tensor(a + (cute::get<0>(tileCoord) * bM * K + kStage * bK),
-            BLAS::suggest_layout_smem_a()), sA);
-        flashmoe_blas::copy<BLAS, bAlignment>(
-          flashmoe_blas::make_tensor(b + (kStage * bK * N + cute::get<1>(tileCoord) * bN),
-            BLAS::suggest_layout_smem_b()), sB);
+        // Copy A tile [bM, bK] from global memory to shared memory
+        // A is [M, K] row-major; shared A is row_major with padded stride
+        // load_a reads: sA.ptr[m * sA_stride + k]
+        {
+          const auto* __restrict__ gA_ptr = a + cute::get<0>(tileCoord) * bM * K + kStage * bK;
+          constexpr int sA_stride = BLAS::SmemLayoutA::stride;
+          constexpr int threads_val = BLAS::max_threads_per_block;
+          constexpr int total_a = bM * bK;
+          constexpr int per_a = (total_a + threads_val - 1) / threads_val;
+          for (int ii = 0; ii < per_a; ++ii) {
+            int flat = threadIdx.x + ii * threads_val;
+            if (flat < total_a) {
+              int m = flat / bK;
+              int k = flat % bK;
+              // Global: row-major with stride K; Shared: row-major with stride sA_stride
+              sA.ptr[m * sA_stride + k] = gA_ptr[m * K + k];
+            }
+          }
+        }
+        // Copy B tile [bK, bN] from global memory to shared memory
+        // B is [K, N] row-major; shared B is col_major with padded stride
+        // load_b reads: sB.ptr[n * sB_stride + k]
+        {
+          const auto* __restrict__ gB_ptr = b + kStage * bK * N + cute::get<1>(tileCoord) * bN;
+          constexpr int sB_stride = BLAS::SmemLayoutB::stride;
+          constexpr int threads_val = BLAS::max_threads_per_block;
+          constexpr int total_b = bK * bN;
+          constexpr int per_b = (total_b + threads_val - 1) / threads_val;
+          for (int ii = 0; ii < per_b; ++ii) {
+            int flat = threadIdx.x + ii * threads_val;
+            if (flat < total_b) {
+              int k = flat / bN;
+              int n = flat % bN;
+              // Row-major copy: global stride=N, shared stride=sB_stride
+              // (load_b col_major access transposes implicitly)
+              sB.ptr[k * sB_stride + n] = gB_ptr[k * N + n];
+            }
+          }
+        }
         __syncthreads();
         BLAS().execute(sA, sB, accumulator, transformOp, transformOp);
         __syncthreads();

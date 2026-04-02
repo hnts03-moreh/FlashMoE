@@ -251,6 +251,40 @@ struct SelectMfma<double, TileM, TileN> {
 template <typename Element, int TileM, int TileN>
 using select_mfma_t = typename SelectMfma<Element, TileM, TileN>::type;
 
+// -------------------------------------------------------
+// MFMA output layout mapping
+// -------------------------------------------------------
+// For v_mfma_f32_MxNx*: maps (lane_id, vgpr_idx) to (row, col) within
+// the MxN output sub-tile.
+//
+// Hardware layout (CDNA3, gfx942):
+//   col = lane_id % mfma_n
+//   num_groups = wavefront_size / mfma_n  (2 for 32x32, 4 for 16x16)
+//   group_id = lane_id / mfma_n
+//   block_stride = num_groups * 4
+//   row = (vgpr / 4) * block_stride + group_id * 4 + (vgpr % 4)
+//
+template <typename MfmaInstr>
+struct MfmaOutputLayout {
+    static constexpr int mfma_m = MfmaInstr::M;
+    static constexpr int mfma_n = MfmaInstr::N;
+    static constexpr int c_per_thread = MfmaInstr::c_per_thread;
+    static constexpr int wavefront_size = 64;
+    static constexpr int num_groups = wavefront_size / mfma_n;
+    static constexpr int block_stride = num_groups * 4;
+
+    __device__ __forceinline__
+    static int row(int lane_id, int vgpr) {
+        int group_id = lane_id / mfma_n;
+        return (vgpr / 4) * block_stride + group_id * 4 + (vgpr % 4);
+    }
+
+    __device__ __forceinline__
+    static int col(int lane_id) {
+        return lane_id % mfma_n;
+    }
+};
+
 } // namespace mfma
 } // namespace rocblasdx
 

@@ -37,7 +37,11 @@ void gemmMainloop(void* __restrict__ const& workspace,
     // gmem -> rmem: load bias
     const auto gD = flashmoe::tile::getBias<BM{}, BN{}>(bias, M, N, cute::select<0, 1>(tileCoord));
     auto d_frag = flashmoe_blas::make_fragment_like<ElementC>(accumulator.get_results());
+#if defined(FLASHMOE_PLATFORM_HIP)
+    flashmoe_blas::copy_fragment_mfma<flashmoe_blas::alignment_of<BLAS>::c, BLAS>(gD, d_frag);
+#else
     flashmoe_blas::copy_fragment<flashmoe_blas::alignment_of<BLAS>::c>(gD, d_frag, accumulator);
+#endif
     // Epilogue
     constexpr Activation act{}; // activation function like relu, etc
     using AccumType = decltype(accumulator)::value_type;
@@ -52,6 +56,10 @@ void gemmMainloop(void* __restrict__ const& workspace,
     });
     auto gC = flashmoe::tile::getC<BM{}, BN{}, flashmoe_blas::arrangement_of_v_c<BLAS>>(c, M, N,
         cute::select<0, 1>(tileCoord));
+#if defined(FLASHMOE_PLATFORM_HIP)
+    // HIP: write directly to global memory via explicit MFMA-aware copy
+    flashmoe_blas::copy_fragment_mfma<flashmoe_blas::alignment_of<BLAS>::c, BLAS>(d_frag, gC);
+#else
     // rmem -> smem
     auto sC = flashmoe_blas::make_tensor(static_cast<ElementC*>(workspace), BLAS::suggest_layout_smem_c());
     __syncthreads();
@@ -59,6 +67,7 @@ void gemmMainloop(void* __restrict__ const& workspace,
     __syncthreads();
     // smem -> gmem
     flashmoe_blas::copy<BLAS, flashmoe_blas::alignment_of<BLAS>::c>(sC, gC);
+#endif
 }
 
 #define SC(T, v) static_cast<T>(v)
@@ -189,7 +198,7 @@ void driver(const int& M, const int& N, const int& K, const float& rtol, const f
     >;
     auto kernel = gk<TileGEMM, Act, Element, ElementC>;
     int bps = 0;
-    constexpr auto sharedSize = bK * pipeStages * (bM + bN) * sizeof(Element);
+    constexpr auto sharedSize = TileGEMM::SharedSizeAB::value;
     CHECK_CUDA(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, sharedSize));
     CHECK_CUDA(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel, threads, sharedSize));
     const int blocks = min((M / bM) * (N / bN), bps * NUM_SMS);
@@ -283,7 +292,9 @@ int main(const int argc, char** argv) {
     kickStart(argc, argv);
 }
 #else
-// HIP: kernel-only benchmark (no MatX reference)
+// HIP: kernel benchmark + host CPU reference for accuracy verification
+#include "host_reference.cuh"
+
 template<typename TileGEMM, typename Activation, int threads, int sharedSize,
 typename AccumType, typename Element, typename ElementC>
 __host__ __forceinline__
@@ -335,7 +346,7 @@ void driver(const int& M, const int& N, const int& K, const float& rtol, const f
     >;
     auto kernel = gk<TileGEMM, Act, Element, ElementC>;
     int bps = 0;
-    constexpr auto sharedSize = bK * pipeStages * (bM + bN) * sizeof(Element);
+    constexpr auto sharedSize = TileGEMM::SharedSizeAB::value;
     CHECK_CUDA(gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, sharedSize));
     CHECK_CUDA(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&bps, kernel, threads, sharedSize));
     const int blocks = cute::min((M / bM) * (N / bN), bps * NUM_SMS);
@@ -345,10 +356,32 @@ void driver(const int& M, const int& N, const int& K, const float& rtol, const f
     randUniform<FLASHMOE_ARCH>(a, M * K, rd(), min_v, max_v, stream);
     randUniform<FLASHMOE_ARCH>(b, N * K, rd(), min_v, max_v, stream);
     randUniform<FLASHMOE_ARCH>(bias, N, rd(), min_v, max_v, stream);
+
+    // Run kernel once to produce output for accuracy check
+    gk<TileGEMM, Act><<<blocks, threads, sharedSize, stream>>>(a, b, c, bias, M, N, K);
+    CHECK_CUDA(gpuStreamSynchronize(stream));
+
+    // Copy device data to host for CPU reference comparison
+    const size_t sz_a = static_cast<size_t>(M) * K;
+    const size_t sz_b = static_cast<size_t>(N) * K;
+    const size_t sz_c = static_cast<size_t>(M) * N;
+    std::vector<Element> h_a(sz_a), h_b(sz_b);
+    std::vector<ElementC> h_bias(N), h_c(sz_c), h_c_ref(sz_c);
+    CHECK_CUDA(hipMemcpy(h_a.data(), a, sz_a * sizeof(Element), hipMemcpyDeviceToHost));
+    CHECK_CUDA(hipMemcpy(h_b.data(), b, sz_b * sizeof(Element), hipMemcpyDeviceToHost));
+    CHECK_CUDA(hipMemcpy(h_bias.data(), bias, N * sizeof(ElementC), hipMemcpyDeviceToHost));
+    CHECK_CUDA(hipMemcpy(h_c.data(), c, sz_c * sizeof(ElementC), hipMemcpyDeviceToHost));
+
+    // CPU reference: Act(A @ B.T + bias)
+    host_ref::gemm_bias_act<host_ref::HostReLU>(h_a.data(), h_b.data(), h_bias.data(), h_c_ref.data(), M, N, K);
+    const double error_pct = host_ref::compare_isclose(h_c.data(), h_c_ref.data(), M * N, rtol, atol);
+
+
+    // Benchmark
     const auto k_ms = gk_run_hip<TileGEMM, Act, threads, sharedSize, AccumType>(a, b, c, bias, M, N, K, blocks, stream);
 
-    printf("%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %.1e, %.1e, n/a, %f, n/a\n",
-        M, N, K, bM, bN, bK, pipeStages, threads, bps, NUM_SMS, blocks, rtol, atol, k_ms);
+    printf("%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %.1e, %.1e, %lf, %f, n/a\n",
+        M, N, K, bM, bN, bK, pipeStages, threads, bps, NUM_SMS, blocks, rtol, atol, error_pct, k_ms);
 
     CHECK_CUDA(gpuPeekAtLastError());
     gpuFreeAsync(a, stream);
@@ -368,7 +401,7 @@ void kickStart(const int argc, char** argv) {
     using ElementC = Element;
     using MMA_C = float;
     printf("M, N, K, bM, bN, bK, pipeStages, threads, blocks/SM, SMs, blocks, rtol, atol, error(%%), Kernel_Time(ms), "
-           "Ref_Time(ms)\n");
+           "Ref_Time(ms)\n");  // Note: HIP shows CPU ref error %, Ref_Time stays n/a
     if (argc > 1) MNK = std::stoi(argv[1]);
     if (argc > 2) MNK_max = std::stoi(argv[2]);
     if (argc > 3) rtol = std::stof(argv[3]);
