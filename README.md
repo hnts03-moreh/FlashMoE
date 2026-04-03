@@ -231,8 +231,10 @@ and include the header file like below. See `csrc/tests/flashmoe.cu` for more us
 
 ## 📊 Performance Results
 - We measure with the EP+DP parallelism scheme.
-- We compare against [COMET](https://github.com/bytedance/flux) (MLSys '25), [Megatron-LM](https://github.com/NVIDIA/Megatron-LM), and 
-[Triton-Distributed](https://github.com/ByteDance-Seed/Triton-distributed). 
+- We compare against: 
+  - [COMET](https://github.com/bytedance/flux) (MLSys '25) at commit: 19831ca2d820e3e782ed1d15d8b52d0898b78b26
+  - [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) at v0.15.3
+  - [Triton-Distributed](https://github.com/ByteDance-Seed/Triton-distributed) at commit: 3644f0586d14591c8a43a10aa6b47fe98a95aea7 
 - We measure a single layer's execution only. 
 - For every model we evaluated, 
 we use model shapes and data types as defined in its corresponding `config.json` on HuggingFace. 
