@@ -21,15 +21,28 @@ def _is_hip_platform() -> bool:
 # ---------------------------------------------------------------------------
 
 class _GPURuntime:
-    """Minimal abstraction over cuda.core / hip-python device & stream APIs."""
+    """Minimal abstraction over cuda.core / hip-python / torch device & stream APIs."""
 
     def __init__(self):
         self._hip = _is_hip_platform()
+        # On HIP, prefer hip-python but fall back to torch.cuda (which wraps HIP on ROCm)
+        self._use_torch_hip = False
+        if self._hip and not has_package("hip"):
+            if has_package("torch"):
+                self._use_torch_hip = True
+            else:
+                raise ImportError(
+                    "HIP platform detected but neither 'hip' (hip-python) nor 'torch' "
+                    "is available. Install one of: pip install hip-python, or use PyTorch ROCm."
+                )
 
     # -- device count -------------------------------------------------------
     @property
     def num_devices(self) -> int:
         if self._hip:
+            if self._use_torch_hip:
+                import torch
+                return torch.cuda.device_count()
             from hip import hip as _hip
             err, count = _hip.hipGetDeviceCount()
             if err != 0:
@@ -41,12 +54,17 @@ class _GPURuntime:
 
     # -- Device wrapper -----------------------------------------------------
     class _Device:
-        def __init__(self, device_id: int, is_hip: bool):
+        def __init__(self, device_id: int, is_hip: bool, use_torch: bool = False):
             self._id = device_id
             self._hip = is_hip
+            self._use_torch = use_torch
 
         def set_current(self):
             if self._hip:
+                if self._use_torch:
+                    import torch
+                    torch.cuda.set_device(self._id)
+                    return
                 from hip import hip as _hip
                 err = _hip.hipSetDevice(self._id)
                 if err != 0:
@@ -57,6 +75,10 @@ class _GPURuntime:
 
         def sync(self):
             if self._hip:
+                if self._use_torch:
+                    import torch
+                    torch.cuda.synchronize(self._id)
+                    return
                 from hip import hip as _hip
                 err = _hip.hipDeviceSynchronize()
                 if err != 0:
@@ -66,7 +88,7 @@ class _GPURuntime:
                 cuda.Device(self._id).sync()
 
     def Device(self, device_id: int):  # noqa: N802  -- match cuda.core API
-        return self._Device(device_id, self._hip)
+        return self._Device(device_id, self._hip, self._use_torch_hip)
 
     # -- Stream from raw handle --------------------------------------------
     class _StreamHandle:
