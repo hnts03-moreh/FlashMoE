@@ -38,19 +38,19 @@
 //  Signal operation constants
 // =====================================================================
 
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_HOST_STUBS)
+// Stub constants — numeric values matching ROCSHMEM/NVSHMEM enums
+#  define SHMEM_SIGNAL_SET   0
+#  define SHMEM_SIGNAL_ADD   1
+#  define SHMEM_CMP_EQ       1
+#  define SHMEM_CMP_NE       2
+#  define SHMEM_CMP_GT       3
+#  define SHMEM_CMP_GE       4
+#  define SHMEM_CMP_LT       5
+#  define SHMEM_CMP_LE       6
+#elif defined(FLASHMOE_PLATFORM_HIP)
 #  define SHMEM_SIGNAL_SET   rocshmem::ROCSHMEM_SIGNAL_SET
 #  define SHMEM_SIGNAL_ADD   rocshmem::ROCSHMEM_SIGNAL_ADD
-#else
-#  define SHMEM_SIGNAL_SET   NVSHMEM_SIGNAL_SET
-#  define SHMEM_SIGNAL_ADD   NVSHMEM_SIGNAL_ADD
-#endif
-
-// =====================================================================
-//  Comparison constants (for wait_until)
-// =====================================================================
-
-#if defined(FLASHMOE_PLATFORM_HIP)
 #  define SHMEM_CMP_EQ  rocshmem::ROCSHMEM_CMP_EQ
 #  define SHMEM_CMP_NE  rocshmem::ROCSHMEM_CMP_NE
 #  define SHMEM_CMP_GT  rocshmem::ROCSHMEM_CMP_GT
@@ -58,6 +58,8 @@
 #  define SHMEM_CMP_LT  rocshmem::ROCSHMEM_CMP_LT
 #  define SHMEM_CMP_LE  rocshmem::ROCSHMEM_CMP_LE
 #else
+#  define SHMEM_SIGNAL_SET   NVSHMEM_SIGNAL_SET
+#  define SHMEM_SIGNAL_ADD   NVSHMEM_SIGNAL_ADD
 #  define SHMEM_CMP_EQ  NVSHMEM_CMP_EQ
 #  define SHMEM_CMP_NE  NVSHMEM_CMP_NE
 #  define SHMEM_CMP_GT  NVSHMEM_CMP_GT
