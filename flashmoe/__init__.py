@@ -56,6 +56,14 @@ def initialize(arg: InitArgs) -> ContextHandle:
         cb.sync_all(arg.stream_ptr)
 
     def detect_topo():
+        import os
+        # Allow override via env var
+        env_topo = os.environ.get("FLASHMOE_TOPO")
+        if env_topo:
+            if env_topo.lower() in ("nvlink", "xgmi"):
+                return Topology.NVLINK_ONLY
+            return Topology.MIXED
+
         if _platform == Platform.CUDA:
             assert nvshmem.init_status() == nvshmem.InitStatus.STATUS_IS_INITIALIZED
             if nvshmem.team_n_pes(nvshmem.Teams.TEAM_SHARED) == nvshmem.n_pes():
@@ -63,10 +71,12 @@ def initialize(arg: InitArgs) -> ContextHandle:
             else:
                 return Topology.MIXED
         else:
-            # On HIP/ROCm, use the abstracted comm backend
+            # On HIP/ROCm, ROCSHMEM has no TEAM_SHARED.
+            # Use MPI node-local split to detect if all PEs are on one node.
             comm = cb._get_comm()
             assert comm.init_status() == comm.InitStatus.STATUS_IS_INITIALIZED
-            if comm.team_n_pes(comm.Teams.TEAM_SHARED) == comm.n_pes():
+            local_size = comm._mpi_local_size()
+            if local_size == comm.n_pes():
                 return Topology.NVLINK_ONLY
             else:
                 return Topology.MIXED

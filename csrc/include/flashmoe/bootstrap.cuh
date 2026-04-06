@@ -27,6 +27,9 @@
 #  if __has_include("flashmoe/platform/shmem.h")
 #    include "flashmoe/platform/shmem.h"
 #  endif
+#  if __has_include(<mpi.h>)
+#    include <mpi.h>
+#  endif
 #else
 #  include <nvshmem.h>
 #endif
@@ -221,11 +224,26 @@ namespace flashmoe {
     }
 #if defined(FLASHMOE_PLATFORM_HIP)
     // ROCSHMEM does not have NVSHMEM_TEAM_SHARED_INDEX.
-    // On AMD systems with XGMI (Infinity Fabric), all GPUs in a node
-    // typically share the same interconnect domain. We conservatively
-    // assume MIXED topology unless the user overrides.
-    // TODO: implement proper detection via rocshmem_team or rocm-smi query.
+    // Use MPI_Comm_split_type(SHARED) to count node-local PEs.
+    // If all PEs are on the same node → XGMI_ONLY (equivalent to NVLINK_ONLY).
+    const char* env_topo = std::getenv("FLASHMOE_TOPO");
+    if (env_topo) {
+      if (std::string(env_topo) == "nvlink" || std::string(env_topo) == "xgmi")
+        return Topology::NVLINK_ONLY;
+      return Topology::MIXED;
+    }
+#if defined(MPI_VERSION)
+    MPI_Comm local_comm;
+    MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &local_comm);
+    int local_size = 0;
+    MPI_Comm_size(local_comm, &local_size);
+    MPI_Comm_free(&local_comm);
+    int world_size = flashmoe::shmem::n_pes();
+    return (local_size == world_size) ? Topology::NVLINK_ONLY : Topology::MIXED;
+#else
+    // No MPI available — conservatively assume MIXED
     return Topology::MIXED;
+#endif
 #else
     return nvshmem_team_n_pes(NVSHMEM_TEAM_SHARED_INDEX) == nvshmem_n_pes() ? Topology::NVLINK_ONLY : Topology::MIXED;
 #endif

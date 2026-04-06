@@ -139,23 +139,50 @@ class _CommBackend:
     # -- thin forwarding API ------------------------------------------------
     def init_status(self):
         self._ensure_loaded()
+        if self._hip:
+            # ROCSHMEM: check our manual tracking flag
+            return self._mod.init_status() if hasattr(self._mod, 'init_status') else (
+                _ROCSHMEMInitStatus.INITIALIZED if getattr(self, '_initialized', False)
+                else _ROCSHMEMInitStatus.NOT_INITIALIZED
+            )
         return self._mod.init_status()
 
     @property
     def InitStatus(self):
         self._ensure_loaded()
+        if self._hip and not hasattr(self._mod, 'InitStatus'):
+            return _ROCSHMEMInitStatus
         return self._mod.InitStatus
 
     def init(self, **kwargs):
         self._ensure_loaded()
+        if self._hip:
+            # ROCSHMEM uses MPI-based init — no uid/rank/nranks args.
+            # rocshmem.core.init() takes no arguments (MPI is initialized externally).
+            if hasattr(self._mod, 'init'):
+                self._mod.init()
+            self._initialized = True
+            return
         return self._mod.init(**kwargs)
 
     def get_unique_id(self, **kwargs):
+        if self._hip:
+            # ROCSHMEM has no unique_id concept — MPI handles bootstrapping
+            return None
         self._ensure_loaded()
         return self._mod.get_unique_id(**kwargs)
 
     def sync_all(self, **kwargs):
         self._ensure_loaded()
+        if self._hip:
+            # ROCSHMEM sync_all may expect a raw stream int, not a wrapper
+            stream = kwargs.get('stream')
+            if stream is not None and hasattr(stream, 'handle'):
+                kwargs = {**kwargs, 'stream': stream.handle}
+            if hasattr(self._mod, 'sync_all'):
+                return self._mod.sync_all(**kwargs)
+            # Fallback: host-side barrier
+            return self._mod.barrier_all() if hasattr(self._mod, 'barrier_all') else None
         return self._mod.sync_all(**kwargs)
 
     def my_pe(self):
@@ -168,17 +195,44 @@ class _CommBackend:
 
     def finalize(self):
         self._ensure_loaded()
+        self._initialized = False
         return self._mod.finalize()
 
     def team_n_pes(self, team):
         self._ensure_loaded()
+        if self._hip and not hasattr(self._mod, 'team_n_pes'):
+            # ROCSHMEM may not expose team_n_pes — use MPI for node-local count
+            return self._mpi_local_size()
         return self._mod.team_n_pes(team)
 
     @property
     def Teams(self):
         self._ensure_loaded()
+        if self._hip and not hasattr(self._mod, 'Teams'):
+            return _ROCSHMEMTeams
         return self._mod.Teams
 
+    def _mpi_local_size(self) -> int:
+        """Get number of PEs on the local node via MPI_Comm_split_type."""
+        if has_package("mpi4py"):
+            import mpi4py.MPI as MPI
+            local_comm = MPI.COMM_WORLD.Split_type(MPI.COMM_TYPE_SHARED)
+            size = local_comm.Get_size()
+            local_comm.Free()
+            return size
+        return self.n_pes()  # fallback: assume all on one node
+
+
+class _ROCSHMEMInitStatus:
+    """Stub for ROCSHMEM init status when rocshmem.core lacks InitStatus."""
+    STATUS_IS_INITIALIZED = 1
+    STATUS_NOT_INITIALIZED = 0
+    INITIALIZED = 1
+    NOT_INITIALIZED = 0
+
+class _ROCSHMEMTeams:
+    """Stub for ROCSHMEM Teams when rocshmem.core lacks Teams."""
+    TEAM_SHARED = "TEAM_SHARED_STUB"
 
 _comm = None
 
@@ -216,28 +270,41 @@ def initialize() -> None:
     initialized = False
     dev = gpu.Device(get_local_rank())
     dev.set_current()
-    if has_package("torch"):
-        import torch.distributed as dist
-        if dist.is_initialized():
-            num_ranks = dist.get_world_size()
-            rank_id = dist.get_rank()
-            uniqueid = comm.get_unique_id(empty=True)
-            src_rank = 0
-            if rank_id == src_rank:
-                # Rank 0 gets a real uniqueid
-                uniqueid = comm.get_unique_id()
-                broadcast_objects = [uniqueid]
-            else:
-                broadcast_objects = [None]
-            dist.broadcast_object_list(broadcast_objects, src=src_rank)
-            dist.barrier()
-            comm.init(device=dev, uid=broadcast_objects[0], rank=rank_id, nranks=num_ranks,
-                      initializer_method="uid")
+
+    if _is_hip_platform():
+        # ROCSHMEM: uses MPI for bootstrapping, no UID mechanism
+        if has_package("mpi4py"):
+            comm.init()
             initialized = True
-    if not initialized and has_package("mpi4py"):
-        import mpi4py.MPI as MPI
-        comm.init(device=dev, mpi_comm=MPI.COMM_WORLD, initializer_method="mpi")
-        initialized = True
+        elif has_package("torch"):
+            import torch.distributed as dist
+            if dist.is_initialized():
+                comm.init()
+                initialized = True
+    else:
+        # CUDA / NVSHMEM: UID-based or MPI-based init
+        if has_package("torch"):
+            import torch.distributed as dist
+            if dist.is_initialized():
+                num_ranks = dist.get_world_size()
+                rank_id = dist.get_rank()
+                uniqueid = comm.get_unique_id(empty=True)
+                src_rank = 0
+                if rank_id == src_rank:
+                    uniqueid = comm.get_unique_id()
+                    broadcast_objects = [uniqueid]
+                else:
+                    broadcast_objects = [None]
+                dist.broadcast_object_list(broadcast_objects, src=src_rank)
+                dist.barrier()
+                comm.init(device=dev, uid=broadcast_objects[0], rank=rank_id, nranks=num_ranks,
+                          initializer_method="uid")
+                initialized = True
+        if not initialized and has_package("mpi4py"):
+            import mpi4py.MPI as MPI
+            comm.init(device=dev, mpi_comm=MPI.COMM_WORLD, initializer_method="mpi")
+            initialized = True
+
     IS_INITIALIZED = initialized
     if not initialized:
         raise RuntimeError("At least one of {torch, mpi4py} must be initialized")
