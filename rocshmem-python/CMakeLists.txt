@@ -1,4 +1,13 @@
 cmake_minimum_required(VERSION 3.24)
+
+# Use hipcc as C++ compiler — required because librocshmem.a contains
+# HIP device code that g++ can't link. hipcc handles __hip_module_ctor
+# and __hip_gpubin_handle_* symbols via the HIP runtime.
+find_program(HIPCC hipcc HINTS ENV ROCM_PATH /opt/rocm PATH_SUFFIXES bin)
+if(HIPCC)
+    set(CMAKE_CXX_COMPILER "${HIPCC}")
+endif()
+
 project(rocshmem_python LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -60,6 +69,9 @@ target_link_libraries(core PRIVATE
     hip::host
     MPI::MPI_CXX
 )
+
+# ROCSHMEM .a contains -fgpu-rdc objects; hipcc linker needs this flag
+target_link_options(core PRIVATE -fgpu-rdc)
 
 # Install into rocshmem/ package directory
 install(TARGETS core DESTINATION rocshmem)

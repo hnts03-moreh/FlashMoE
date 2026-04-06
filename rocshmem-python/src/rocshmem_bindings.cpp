@@ -84,7 +84,7 @@ static uintptr_t rocshmem_py_calloc(size_t count, size_t size) {
     void* ptr = rocshmem::rocshmem_malloc(count * size);
     if (!ptr)
         throw std::runtime_error("rocshmem_calloc failed");
-    hipMemset(ptr, 0, count * size);
+    (void)hipMemset(ptr, 0, count * size);
     return reinterpret_cast<uintptr_t>(ptr);
 }
 
