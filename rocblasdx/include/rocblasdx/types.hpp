@@ -28,8 +28,8 @@ struct alignas(4) tfloat32_t {
     float storage;
 
     __host__ __device__ tfloat32_t() = default;
-    __host__ __device__ explicit tfloat32_t(float v) : storage(v) {}
-    __host__ __device__ explicit operator float() const { return storage; }
+    __host__ __device__ tfloat32_t(float v) : storage(v) {}
+    __host__ __device__ operator float() const { return storage; }
 
     __host__ __device__ tfloat32_t operator+(const tfloat32_t& rhs) const {
         return tfloat32_t{storage + rhs.storage};

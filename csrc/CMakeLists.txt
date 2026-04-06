@@ -582,6 +582,16 @@ else()
     target_link_libraries(diagGEMM PRIVATE ${HIPRAND_LIB})
   endif()
 
+  # --- Precision validation (FP16/BF16/FP32 MFMA accuracy) ---
+  add_executable(testPrecision tests/testPrecision.cu)
+  set_source_files_properties(tests/testPrecision.cu PROPERTIES LANGUAGE HIP)
+  flash_hip_common_target(testPrecision)
+  if(TARGET hip::hiprand)
+    target_link_libraries(testPrecision PRIVATE hip::hiprand)
+  elseif(HIPRAND_LIB)
+    target_link_libraries(testPrecision PRIVATE ${HIPRAND_LIB})
+  endif()
+
   # --- Playground (minimal, no GPU deps) ---
   add_executable(playground tests/playground.cu)
   set_source_files_properties(tests/playground.cu PROPERTIES LANGUAGE HIP)

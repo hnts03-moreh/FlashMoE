@@ -346,6 +346,11 @@ private:
     }
 
     // FP32 / FP64 path: scalar input
+    // For mfma_f32_32x32x2f32 (K=2): 64 lanes split into 2 groups of 32.
+    //   Group 0 (lanes 0-31): A[row, k+0], B[k+0, col]
+    //   Group 1 (lanes 32-63): A[row, k+1], B[k+1, col]
+    // For mfma_f32_16x16x4f32 (K=4): 64 lanes split into 4 groups of 16.
+    //   Group g (lanes g*16..(g+1)*16-1): A[row, k+g], B[k+g, col]
     template <typename SmemA, typename SmemB, typename TA, typename TB>
     __device__ __forceinline__
     void run_one_mfma_dispatch(const SmemA& sA, const SmemB& sB,
@@ -354,14 +359,12 @@ private:
                                TA tA, TB tB, std::false_type) const {
         const int tpg = mfma_m;
         const int tid = lane_id % tpg;
+        const int group = lane_id / tpg;
 
-        // FP32 MFMA: mfma_f32_32x32x2f32 takes scalar a, scalar b
-        // Internally it reads from different lanes to get K=2 values.
-        // We provide one scalar per lane. The instruction does K steps internally.
         typename MfmaInstr::AVec a_val = static_cast<typename MfmaInstr::AVec>(
-            tA(load_a(sA, m_base + tid, k_base)));
+            tA(load_a(sA, m_base + tid, k_base + group)));
         typename MfmaInstr::BVec b_val = static_cast<typename MfmaInstr::BVec>(
-            tB(load_b(sB, k_base, n_base + tid)));
+            tB(load_b(sB, k_base + group, n_base + tid)));
 
         MfmaInstr::run(c_vec, a_val, b_val);
     }
