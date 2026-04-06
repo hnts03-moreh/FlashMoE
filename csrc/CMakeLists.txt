@@ -582,6 +582,7 @@ else()
         message(STATUS "Linking ROCSHMEM device bitcode: ${_bc}")
         target_link_options(testFlashMoE PRIVATE
           "SHELL:-Xoffload-linker-${_gfx} ${_bc}"
+          "SHELL:-Xoffload-linker-${_gfx} --allow-multiple-definition"
         )
       else()
         message(WARNING "ROCSHMEM device bitcode not found: ${_bc}")
