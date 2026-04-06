@@ -82,23 +82,45 @@
 
 ---
 
-## Phase 4: 통합 검증 (예정)
+## Phase 4: 통합 검증 (진행 중 — 일부 블로킹)
 
 **목표**: ROCSHMEM 통합, 분산 멀티GPU E2E 테스트
 
 **담당**: comm-porter + python-porter + qa-validator
 
+**커밋**: `d62444b` (최종), `a424748`, `61ddea7`, `6f9bbf0`, `103f03e`, `bd5917b`, `eb5c485`
+
 ### 체크리스트
-- [ ] ROCSHMEM 빌드 (`scripts/build_rocshmem.sh`)
-- [ ] ROCSHMEM 링크된 testFlashMoE 빌드
-- [ ] 디바이스 사이드 SHMEM API 동작 확인 (`rocshmem_wg_init` 등)
-- [ ] 2+ GPU 분산 testFlashMoE 실행
-- [ ] ROCSHMEM Python 바인딩 (pybind11) 개발
-- [ ] `cb.py` ROCSHMEM 경로 런타임 검증
-- [ ] `flashmoe/__init__.py` 분산 초기화 검증
+
+#### 4.1 빌드 및 인프라 (완료)
+- [x] ROCSHMEM 빌드 — `/opt/rocm`에 설치 확인
+- [x] ROCSHMEM 링크된 testFlashMoE 빌드 — 컴파일 성공
+- [x] E2E 테스트 LDS 오버플로우 수정 — bN=64, bK=32, pS=1 (HIP)
+- [x] `cb.py` ROCSHMEM init 경로 — UID→MPI 직접 init, torch.cuda fallback
+- [x] `__init__.py` 토폴로지 감지 — MPI_Comm_split_type + FLASHMOE_TOPO env
+- [x] `bootstrap.cuh` detectTopo() — MPI 기반 구현
+- [x] `phase4_validate.sh` 검증 스크립트
+
+#### 4.2 E2E 분산 테스트 (블로킹)
+- [ ] **BLOCKED**: `moe::forward` 커널 hipcc RDC 심볼 누락
+  - 원인: hipcc ROCm 7.0 `-fgpu-rdc` + 복잡한 template `__global__` 함수
+  - ROCSHMEM `.a` 가 `-fgpu-rdc` 강제 → 커널 device code가 fat binary에서 누락
+  - 시도: device stubs, 직접 .a 링크, `__attribute__((used))` — 모두 실패
+  - 해결 방향: ROCm 팀 보고 또는 ROCSHMEM을 shared lib으로 재빌드
+- [ ] 2+ GPU 분산 testFlashMoE 실행 (위 블로커 해결 필요)
+
+#### 4.3 ROCSHMEM Python 바인딩 (계획 — TODO)
+- [ ] `rocshmem-python` pybind11 서브프로젝트 생성 (rocBLASDx 패턴)
+  - init/finalize, my_pe/n_pes, malloc/free, barrier_all/sync_all, init_status
+- [ ] `cb.py`에서 `rocshmem.core` 대신 자체 바인딩 사용
+- [ ] Python 분산 초기화 E2E 검증
+
+### 블로킹 이슈
+- hipcc ROCm 7.0 `-fgpu-rdc` 컴파일러 제한: 복잡한 template `__global__` 커널의 device code가 fat binary에서 누락됨
+- ROCSHMEM Python 바인딩 부재: `nvshmem4py` 대응 패키지 미존재 → pybind11 직접 구현 필요
 
 ### 완료 기준
-- 분산 E2E 테스트가 2+ GPU에서 정상 실행
+- 분산 E2E 테스트가 2+ GPU에서 정상 실행 (RDC 블로커 해결 후)
 - Python에서 ROCSHMEM init/barrier/finalize 동작
 
 ---
