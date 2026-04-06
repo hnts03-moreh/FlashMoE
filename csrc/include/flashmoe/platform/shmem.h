@@ -22,7 +22,9 @@
 
 #if defined(FLASHMOE_PLATFORM_HIP)
 // ------- ROCm / ROCSHMEM path -------
-#  include <rocshmem/rocshmem.hpp>
+#  if !defined(FLASHMOE_SHMEM_HOST_STUBS)
+#    include <rocshmem/rocshmem.hpp>
+#  endif
 #  define FLASHMOE_HAS_SHMEM 1
 #else
 // ------- CUDA / NVSHMEM path -------
@@ -76,15 +78,17 @@ namespace flashmoe::shmem {
  * On HIP we track initialization state manually.
  */
 #if defined(FLASHMOE_PLATFORM_HIP)
-// ROCSHMEM does not have an init_status query.
-// The user must track initialization state externally.
-// We provide a simple inline helper; bootstrap.cuh sets this.
 inline bool g_rocshmem_initialized = false;
 
 __host__ inline bool is_initialized() {
   return g_rocshmem_initialized;
 }
 
+#if defined(FLASHMOE_SHMEM_HOST_STUBS)
+// Host stubs: no ROCSHMEM linkage needed. For compute-only testing.
+__host__ inline void init() { g_rocshmem_initialized = true; }
+__host__ inline void finalize() { g_rocshmem_initialized = false; }
+#else
 __host__ inline void init() {
   rocshmem::rocshmem_init();
   g_rocshmem_initialized = true;
@@ -99,6 +103,7 @@ __host__ inline void finalize() {
   rocshmem::rocshmem_finalize();
   g_rocshmem_initialized = false;
 }
+#endif
 #else
 __host__ inline bool is_initialized() {
   return nvshmemx_init_status() != NVSHMEM_STATUS_NOT_INITIALIZED;
@@ -109,7 +114,13 @@ __host__ inline bool is_initialized() {
 // --------------- PE queries ------------------------------------------
 
 __host__ inline int n_pes() {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_HOST_STUBS)
+  int rank = 1;
+  #if defined(MPI_VERSION)
+  MPI_Comm_size(MPI_COMM_WORLD, &rank);
+  #endif
+  return rank;
+#elif defined(FLASHMOE_PLATFORM_HIP)
   return rocshmem::rocshmem_n_pes();
 #else
   return nvshmem_n_pes();
@@ -117,7 +128,13 @@ __host__ inline int n_pes() {
 }
 
 __host__ inline int my_pe() {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_HOST_STUBS)
+  int rank = 0;
+  #if defined(MPI_VERSION)
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  #endif
+  return rank;
+#elif defined(FLASHMOE_PLATFORM_HIP)
   return rocshmem::rocshmem_my_pe();
 #else
   return nvshmem_my_pe();
@@ -126,13 +143,12 @@ __host__ inline int my_pe() {
 
 // --------------- Team queries ----------------------------------------
 
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_HOST_STUBS)
+// stub
+#elif defined(FLASHMOE_PLATFORM_HIP)
 __host__ inline int team_n_pes(rocshmem::rocshmem_team_t team) {
   return rocshmem::rocshmem_team_n_pes(team);
 }
-// Note: ROCSHMEM does not have a direct equivalent of NVSHMEM_TEAM_SHARED_INDEX.
-// Topology detection must use an alternative method on HIP.
-// See bootstrap.cuh detectTopo() for the workaround.
 #else
 __host__ inline int team_n_pes_shared() {
   return nvshmem_team_n_pes(NVSHMEM_TEAM_SHARED_INDEX);
@@ -142,7 +158,11 @@ __host__ inline int team_n_pes_shared() {
 // --------------- Symmetric heap allocation ---------------------------
 
 __host__ inline void* shmem_malloc(size_t size) {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_HOST_STUBS)
+  void* ptr = nullptr;
+  hipMalloc(&ptr, size);
+  return ptr;
+#elif defined(FLASHMOE_PLATFORM_HIP)
   return rocshmem::rocshmem_malloc(size);
 #else
   return nvshmem_malloc(size);
@@ -150,13 +170,14 @@ __host__ inline void* shmem_malloc(size_t size) {
 }
 
 __host__ inline void* shmem_calloc(size_t count, size_t size) {
-#if defined(FLASHMOE_PLATFORM_HIP)
-  // ROCSHMEM does not have rocshmem_calloc.
-  // Emulate: malloc + hipMemset.
+#if defined(FLASHMOE_SHMEM_HOST_STUBS)
+  void* ptr = nullptr;
+  hipMalloc(&ptr, count * size);
+  if (ptr) hipMemset(ptr, 0, count * size);
+  return ptr;
+#elif defined(FLASHMOE_PLATFORM_HIP)
   void* ptr = rocshmem::rocshmem_malloc(count * size);
-  if (ptr) {
-    hipMemset(ptr, 0, count * size);
-  }
+  if (ptr) hipMemset(ptr, 0, count * size);
   return ptr;
 #else
   return nvshmem_calloc(count, size);
@@ -164,7 +185,9 @@ __host__ inline void* shmem_calloc(size_t count, size_t size) {
 }
 
 __host__ inline void shmem_free(void* ptr) {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_HOST_STUBS)
+  hipFree(ptr);
+#elif defined(FLASHMOE_PLATFORM_HIP)
   rocshmem::rocshmem_free(ptr);
 #else
   nvshmem_free(ptr);
@@ -174,7 +197,9 @@ __host__ inline void shmem_free(void* ptr) {
 // --------------- Remote pointer query --------------------------------
 
 __host__ inline void* shmem_ptr(const void* dest, int pe) {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_HOST_STUBS)
+  (void)pe; return const_cast<void*>(dest);
+#elif defined(FLASHMOE_PLATFORM_HIP)
   return rocshmem::rocshmem_ptr(dest, pe);
 #else
   return nvshmem_ptr(const_cast<void*>(dest), pe);
@@ -184,7 +209,11 @@ __host__ inline void* shmem_ptr(const void* dest, int pe) {
 // --------------- Barrier / Sync --------------------------------------
 
 __host__ inline void barrier_all() {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_HOST_STUBS)
+  #if defined(MPI_VERSION)
+  MPI_Barrier(MPI_COMM_WORLD);
+  #endif
+#elif defined(FLASHMOE_PLATFORM_HIP)
   rocshmem::rocshmem_barrier_all();
 #else
   nvshmem_barrier_all();
@@ -192,7 +221,11 @@ __host__ inline void barrier_all() {
 }
 
 __host__ inline void sync_all() {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_HOST_STUBS)
+  #if defined(MPI_VERSION)
+  MPI_Barrier(MPI_COMM_WORLD);
+  #endif
+#elif defined(FLASHMOE_PLATFORM_HIP)
   rocshmem::rocshmem_sync_all();
 #else
   nvshmem_sync_all();

@@ -562,26 +562,20 @@ else()
   # --- FlashMoE E2E test (requires ROCSHMEM + MPI) ---
   add_executable(testFlashMoE tests/flashmoe.cu)
   set_source_files_properties(tests/flashmoe.cu PROPERTIES LANGUAGE HIP)
-  # Strategy: link ROCSHMEM host lib for init/finalize/malloc, but strip
-  # -fgpu-rdc to avoid kernel symbol resolution issues. Device-side SHMEM
-  # calls are stubbed out (FLASHMOE_SHMEM_DEVICE_STUBS).
+  # E2E test: compute pipeline testing without ROCSHMEM linkage.
+  # librocshmem.a contains HIP device objects that force -fgpu-rdc,
+  # which prevents the moe::forward kernel from loading at runtime.
+  # Instead: stub all SHMEM calls (host+device) and use MPI for PE queries.
   flash_hip_common_target(testFlashMoE)
-  if(FLASHMOE_HAS_ROCSHMEM)
-    # Strip -fgpu-rdc from roc::rocshmem interface to prevent RDC mode
-    set_property(TARGET roc::rocshmem PROPERTY INTERFACE_COMPILE_OPTIONS "")
-    set_property(TARGET roc::rocshmem PROPERTY INTERFACE_LINK_LIBRARIES
-      "MPI::MPI_CXX;Threads::Threads;hip::device;hip::host;dl;hsa-runtime64::hsa-runtime64"
-    )
-    target_link_libraries(testFlashMoE PRIVATE roc::rocshmem)
-    target_compile_definitions(testFlashMoE PRIVATE
-      FLASHMOE_HAS_SHMEM=1
-      FLASHMOE_SKIP_WG_INIT=1
-      FLASHMOE_SHMEM_DEVICE_STUBS=1
-    )
-    find_package(MPI QUIET COMPONENTS CXX)
-    if(TARGET MPI::MPI_CXX)
-      target_link_libraries(testFlashMoE PRIVATE MPI::MPI_CXX)
-    endif()
+  target_compile_definitions(testFlashMoE PRIVATE
+    FLASHMOE_HAS_SHMEM=1
+    FLASHMOE_SKIP_WG_INIT=1
+    FLASHMOE_SHMEM_DEVICE_STUBS=1
+    FLASHMOE_SHMEM_HOST_STUBS=1
+  )
+  find_package(MPI QUIET COMPONENTS CXX)
+  if(TARGET MPI::MPI_CXX)
+    target_link_libraries(testFlashMoE PRIVATE MPI::MPI_CXX)
   endif()
 
   # --- GEMM diagnostic (128+ tile MFMA debug) ---
