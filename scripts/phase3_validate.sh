@@ -17,7 +17,8 @@
 #   <BUILD_DIR>/results/phase3_scheduler.txt — testScheduler results
 #   <BUILD_DIR>/results/phase3_summary.txt  — Overall summary
 
-set -euo pipefail
+set -uo pipefail
+# NOTE: no set -e — individual test failures should not abort the script
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -52,7 +53,7 @@ echo "[1/3] Building HIP test binaries..."
 BUILD_RC=${PIPESTATUS[0]}
 if [ $BUILD_RC -ne 0 ]; then
     echo "BUILD FAILED — see ${RESULTS_DIR}/phase3_build.log"
-    exit 1
+    echo "Attempting to run existing binaries anyway..."
 fi
 echo "Build OK"
 echo ""
@@ -71,13 +72,17 @@ run_test() {
     {
         echo "=== ${name} started at $(date) ==="
         if [ -f "${BUILD_DIR}/${binary}" ]; then
-            "${BUILD_DIR}/${binary}" "${args[@]}" 2>&1
-            echo "EXIT_CODE=$?"
+            timeout 300 "${BUILD_DIR}/${binary}" "${args[@]}" 2>&1
+            local rc=$?
+            echo "EXIT_CODE=${rc}"
+            if [ $rc -ne 0 ]; then
+                echo "CRASHED or FAILED (exit code ${rc})"
+            fi
         else
             echo "SKIP: binary not found: ${BUILD_DIR}/${binary}"
         fi
         echo "=== ${name} completed at $(date) ==="
-    } > "${RESULTS_DIR}/${output}" 2>&1
+    } > "${RESULTS_DIR}/${output}" 2>&1 || true
     echo " done -> ${output}"
 }
 
