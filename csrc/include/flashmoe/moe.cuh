@@ -182,7 +182,7 @@ namespace flashmoe::moe
     constexpr int bM = bM0;
     constexpr int arch = Config::Arch::value;
     constexpr int threads = Config::Threads::value;
-    const auto roundEC = cute::ceil_div(kArgs.EC, bM) * bM;
+    const auto roundEC = cute::ceil_div(ctx.EC, bM) * bM;
     const auto symHeap = Heap{
       ctx.symHeap, ctx.nLx, roundEC, kArgs.H, sizeof(DataType)
     };

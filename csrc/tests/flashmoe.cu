@@ -759,7 +759,7 @@ void drive(const int argc, char** argv) {
     .EC = EC,
   };
 
-  using Element = __half;
+  using Element = __nv_bfloat16;
   static_assert(cuda::std::is_same_v<Element, __half> ||
     cuda::std::is_same_v<Element, __nv_bfloat16> ||
     cuda::std::is_same_v<Element, float> ||

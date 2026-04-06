@@ -5,16 +5,14 @@
 // place to experiment
 
 #include <cstdio>
-struct Foo {
-  int a;
-  int b;
-};
+#include <cuda_fp16.h>
+
+#include "../include/flashmoe/tile.cuh"
 
 int main() {
-  constexpr Foo foo{6, 7};
-  const auto p = new Foo(foo);
-  p->a += 1;
-  auto q = *p;
-  printf("a is %d\n", q.a);
-  delete p;
+  constexpr flashmoe::Converter<float2, __half2> loadOp{};
+  __half2_raw a{__half2ushort_rn(__half{1.f}),
+    __half2ushort_rn(__half{1.f})};
+  const auto c = loadOp(a);
+
 }

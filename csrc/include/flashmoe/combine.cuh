@@ -61,8 +61,9 @@ namespace flashmoe
     cublasdx::copy_wait();
     __syncthreads();
     if constexpr (c == CombineMode::single) {
-      using VTD = VectorTypeDescriptor<Element, ElementAlignment<Element, bN>>;
+      using VTD = VectorTypeDescriptor<typename RawType<Element>::type, ElementAlignment<Element, bN>>;
       using VT = VTD::VectorType;
+      static_assert(cuda::std::is_trivially_copyable_v<VT>);
       constexpr auto vw = VTD::VectorWidth::value;
       constexpr auto vbN = bN / vw;
       constexpr auto nElems = vbN * bM;
@@ -126,8 +127,12 @@ namespace flashmoe
 
       constexpr int maxVectorWidth = ElementAlignment<RAT, bNp> / sizeof(RAT);
       using RedAddOp = RedAdd<RedArch<Arch>, RAT, maxVectorWidth>;
-      using RVD = VectorTypeDescriptor<RAT, RedAddOp::VectorWidth::value * sizeof(RAT)>;
+      using RawRAT = RawType<RAT>::type;
+      static_assert(sizeof(RawRAT) == sizeof(RAT) && alignof(RawRAT) == alignof(RAT));
+      using RVD = VectorTypeDescriptor<RawRAT, RedAddOp::VectorWidth::value * sizeof(RAT)>;
+      using RVR = VectorTypeDescriptor<RAT, RedAddOp::VectorWidth::value * sizeof(RAT)>::VectorType;
       using RV = RVD::VectorType;
+      static_assert(cuda::std::is_trivially_copyable_v<RV>);
 
       constexpr int totalVecWidth = RVD::VectorWidth::value * RAD::Width::value;
       constexpr auto rbN = bN / totalVecWidth;
@@ -140,7 +145,6 @@ namespace flashmoe
       auto mC = cute::make_tensor(cute::make_gmem_ptr(reinterpret_cast<RAT*>(moeOutput)),
                                   cute::make_layout(cute::make_shape(S, vHo), cute::LayoutRight{}));
       auto tC = cute::local_tile(mC, cute::make_shape(S, cute::Int<bNp>{}), tileCoord);
-
       constexpr auto totalElems = bM * rbN; // cublasdx::cosize(RSL{})
       const auto actualElems = tileSize * rbN;
       constexpr auto redElemsPerThread = totalElems / threads;
@@ -152,6 +156,7 @@ namespace flashmoe
           const auto colIdx = idx % rbN;
           const auto indexAndScale = stIds[rowIdx];
           auto tokenValue = vsC(rowIdx, colIdx);
+          RVR scaledValue{};
           const auto tokIdx = indexAndScale.tokenIdx;
           if constexpr (RAD::Width::value == 2) {
             constexpr Converter<float2, RAT> loadOp{};
@@ -160,15 +165,16 @@ namespace flashmoe
             const auto scale2 = float2{indexAndScale.probability, indexAndScale.probability};
             for (int j = 0; j < packWidth; ++j) {
               // convert to float2 -> multiply -> convert back
-              tokenValue[j] = storeOp(float2Mul(loadOp(tokenValue[j]), scale2));
+              scaledValue[j] = storeOp(float2Mul(loadOp(tokenValue[j]), scale2));
             }
           }
           else {
-            constexpr Converter<float, RAT> loadOp{};
-            constexpr Converter<RAT, float> storeOp{};
+            using AccumType = cuda::std::common_type_t<float, RAT>;
+            constexpr Converter<AccumType, RAT> loadOp{};
+            constexpr Converter<RAT, AccumType> storeOp{};
             for (int j = 0; j < packWidth; ++j) {
               // convert to float -> multiply -> convert back
-              tokenValue[j] = storeOp(loadOp(tokenValue[j]) * indexAndScale.probability);
+              scaledValue[j] = storeOp(loadOp(tokenValue[j]) * indexAndScale.probability);
             }
           }
           // account for the fact that the type of the below tile is either Element or RAT.
@@ -177,7 +183,7 @@ namespace flashmoe
           // which is contiguous in memory.
           auto* __restrict__ tCp = (&tC(tokIdx, colIdx * packWidth));
           constexpr RedAddOp op{};
-          op(tCp, tokenValue);
+          op(tCp, scaledValue);
         }
       }
       else {
@@ -188,6 +194,7 @@ namespace flashmoe
             const auto colIdx = idx % rbN;
             const auto indexAndScale = stIds[rowIdx];
             auto tokenValue = vsC(rowIdx, colIdx);
+            RVR scaledValue{};
             const auto tokIdx = indexAndScale.tokenIdx;
             if constexpr (RAD::Width::value == 2) {
               constexpr Converter<float2, RAT> loadOp{};
@@ -196,20 +203,21 @@ namespace flashmoe
               const auto scale2 = float2{indexAndScale.probability, indexAndScale.probability};
               for (int j = 0; j < packWidth; ++j) {
                 // convert to float2 -> multiply -> convert back
-                tokenValue[j] = storeOp(float2Mul(loadOp(tokenValue[j]), scale2));
+                scaledValue[j] = storeOp(float2Mul(loadOp(tokenValue[j]), scale2));
               }
             }
             else {
-              constexpr Converter<float, RAT> loadOp{};
-              constexpr Converter<RAT, float> storeOp{};
+              using AccumType = cuda::std::common_type_t<float, RAT>;
+              constexpr Converter<AccumType, RAT> loadOp{};
+              constexpr Converter<RAT, AccumType> storeOp{};
               for (int j = 0; j < packWidth; ++j) {
                 // convert to float -> multiply -> convert back
-                tokenValue[j] = storeOp(loadOp(tokenValue[j]) * indexAndScale.probability);
+                scaledValue[j] = storeOp(loadOp(tokenValue[j]) * indexAndScale.probability);
               }
             }
             auto* __restrict__ tCp = &tC(tokIdx, colIdx * packWidth);
             constexpr RedAddOp op{};
-            op(tCp, tokenValue);
+            op(tCp, scaledValue);
           }
         }
       }
@@ -221,6 +229,7 @@ namespace flashmoe
           const auto colIdx = idx % rbN;
           const auto indexAndScale = stIds[rowIdx];
           auto tokenValue = vsC(rowIdx, colIdx);
+          RVR scaledValue{};
           const auto tokIdx = indexAndScale.tokenIdx;
           if (idx < actualElems) {
             if constexpr (RAD::Width::value == 2) {
@@ -230,20 +239,21 @@ namespace flashmoe
               const auto scale2 = float2{indexAndScale.probability, indexAndScale.probability};
               for (int j = 0; j < packWidth; ++j) {
                 // convert to float2 -> multiply -> convert back
-                tokenValue[j] = storeOp(float2Mul(loadOp(tokenValue[j]), scale2));
+                scaledValue[j] = storeOp(float2Mul(loadOp(tokenValue[j]), scale2));
               }
             }
             else {
-              constexpr Converter<float, RAT> loadOp{};
-              constexpr Converter<RAT, float> storeOp{};
+              using AccumType = cuda::std::common_type_t<float, RAT>;
+              constexpr Converter<AccumType, RAT> loadOp{};
+              constexpr Converter<RAT, AccumType> storeOp{};
               for (int j = 0; j < packWidth; ++j) {
                 // convert to float -> multiply -> convert back
-                tokenValue[j] = storeOp(loadOp(tokenValue[j]) * indexAndScale.probability);
+                scaledValue[j] = storeOp(loadOp(tokenValue[j]) * indexAndScale.probability);
               }
             }
             auto* __restrict__ tCp = &tC(tokIdx, colIdx * packWidth);
             constexpr RedAddOp op{};
-            op(tCp, tokenValue);
+            op(tCp, scaledValue);
           }
         }
       }

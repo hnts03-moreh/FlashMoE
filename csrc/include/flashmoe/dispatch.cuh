@@ -90,10 +90,11 @@ namespace flashmoe
     }
     __syncthreads();
     const auto* __restrict__ expertLookup = enL;
-    cutlass::AlignedArray<uint32_t, batch> rTID{};
+    uint32_t rTID [batch];
     constexpr auto eWidth = ElementWidth<Element, bN, MAX_ACCESS_ALIGNMENT>; // 256B in Blackwell, 128B others
-    using VTD = VectorTypeDescriptor<Element, ElementAlignmentForWidth<Element, bN, eWidth>>;
+    using VTD = VectorTypeDescriptor<typename RawType<Element>::type, ElementAlignmentForWidth<Element, bN, eWidth>>;
     using VectorElement = VTD::VectorType;
+    static_assert(cuda::std::is_trivially_copyable_v<VectorElement>);
     // below is fine because we enforce that H % bN == 0 and bN % vectorWidth == 0
     const int vH = H / VTD::VectorWidth::value;
     const auto* __restrict__ vTokens = reinterpret_cast<const VectorElement*>(tokens);
