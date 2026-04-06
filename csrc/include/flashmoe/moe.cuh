@@ -176,6 +176,7 @@ namespace flashmoe::moe
     Topology topo
   >
   __launch_bounds__(Config::Threads::value, 1)
+  __attribute__((used))
   __global__  void forward(const __grid_constant__ KernelArgs kArgs, const __grid_constant__ Context ctx) {
     // ROCSHMEM: initialize device-side resources for this work-group
     flashmoe::shmem::device::wg_init();

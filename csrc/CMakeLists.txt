@@ -567,30 +567,16 @@ else()
   # are stubbed out. For real distributed communication, ROCSHMEM must be
   # rebuilt with device bitcode support for -fgpu-rdc linking.
   option(FLASHMOE_SHMEM_DEVICE_STUBS "Stub ROCSHMEM device calls (avoids RDC link issues)" ON)
-  if(FLASHMOE_SHMEM_DEVICE_STUBS)
-    flash_hip_common_target(testFlashMoE)
-  else()
-    flash_hip_lto_target(testFlashMoE)
-  endif()
+  flash_hip_lto_target(testFlashMoE)
   if(FLASHMOE_HAS_ROCSHMEM)
+    # Always link full roc::rocshmem (provides -fgpu-rdc, HSA deps, device code)
+    target_link_libraries(testFlashMoE PRIVATE roc::rocshmem)
     target_compile_definitions(testFlashMoE PRIVATE
       FLASHMOE_HAS_SHMEM=1
       FLASHMOE_SKIP_WG_INIT=1
     )
     if(FLASHMOE_SHMEM_DEVICE_STUBS)
-      # Stub mode: link ROCSHMEM host lib directly to avoid -fgpu-rdc
-      # injection from roc::rocshmem INTERFACE_COMPILE_OPTIONS
       target_compile_definitions(testFlashMoE PRIVATE FLASHMOE_SHMEM_DEVICE_STUBS=1)
-      find_library(ROCSHMEM_LIB rocshmem HINTS ENV ROCM_PATH PATH_SUFFIXES lib)
-      if(ROCSHMEM_LIB)
-        target_link_libraries(testFlashMoE PRIVATE ${ROCSHMEM_LIB})
-      endif()
-      target_include_directories(testFlashMoE PRIVATE
-        "$ENV{ROCM_PATH}/include"
-        "/opt/rocm/include"
-      )
-    else()
-      target_link_libraries(testFlashMoE PRIVATE roc::rocshmem)
     endif()
     find_package(MPI QUIET COMPONENTS CXX)
     if(TARGET MPI::MPI_CXX)
