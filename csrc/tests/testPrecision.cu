@@ -163,16 +163,16 @@ std::pair<double, float> run_test(
     return {error_pct, max_abs_err};
 }
 
-// Test sweep for a given precision
+// Test sweep for FP16/BF16 (bK=64, sizeof(Element)=2 → fits in LDS)
 template<typename Element, typename ElementC, typename AccumType>
-void run_precision_suite(const char* label, const long seed, const float rtol, const float atol) {
+void run_precision_suite_half(const char* label, const long seed, const float rtol, const float atol) {
     int pass = 0, fail = 0;
 
     auto check = [&](auto result) {
         if (result.first <= 0.01) ++pass; else ++fail;
     };
 
-    // Small tiles (16x16, 32x32)
+    // Small tiles
     check(run_test<16, 16, 16, 1, AccumType, Element, ElementC>(16, 16, 16, seed, label, rtol, atol));
     check(run_test<32, 32, 32, 1, AccumType, Element, ElementC>(32, 32, 32, seed, label, rtol, atol));
 
@@ -197,6 +197,43 @@ void run_precision_suite(const char* label, const long seed, const float rtol, c
     printf("# %s summary: %d PASS, %d FAIL (total %d)\n\n", label, pass, fail, pass + fail);
 }
 
+// Test sweep for FP32 (bK=32 to fit LDS: float is 4B, so halve K-tile vs FP16)
+// MI300X LDS = 64KB. FP32 bM=128,bN=128,bK=32 → ~37KB (fits).
+template<typename AccumType>
+void run_precision_suite_fp32(const char* label, const long seed, const float rtol, const float atol) {
+    using Element = float;
+    using ElementC = float;
+    int pass = 0, fail = 0;
+
+    auto check = [&](auto result) {
+        if (result.first <= 0.01) ++pass; else ++fail;
+    };
+
+    // Small tiles
+    check(run_test<16, 16, 16, 1, AccumType, Element, ElementC>(16, 16, 16, seed, label, rtol, atol));
+    check(run_test<32, 32, 32, 1, AccumType, Element, ElementC>(32, 32, 32, seed, label, rtol, atol));
+
+    // Standard tiles (64x64, bK=32 for FP32 LDS budget)
+    check(run_test<64, 64, 32, 1, AccumType, Element, ElementC>(64, 64, 32, seed, label, rtol, atol));
+    check(run_test<64, 64, 32, 1, AccumType, Element, ElementC>(128, 128, 64, seed, label, rtol, atol));
+
+    // Large tiles (bK=32)
+    check(run_test<128, 64, 32, 1, AccumType, Element, ElementC>(128, 64, 64, seed, label, rtol, atol));
+    check(run_test<128, 128, 32, 1, AccumType, Element, ElementC>(128, 128, 64, seed, label, rtol, atol));
+
+    // Non-square
+    check(run_test<64, 64, 32, 1, AccumType, Element, ElementC>(256, 128, 64, seed, label, rtol, atol));
+    check(run_test<128, 64, 32, 1, AccumType, Element, ElementC>(256, 128, 128, seed, label, rtol, atol));
+
+    // Larger K (still bK=32, more K-stages)
+    check(run_test<64, 64, 32, 1, AccumType, Element, ElementC>(128, 128, 256, seed, label, rtol, atol));
+
+    // Production-like
+    check(run_test<128, 128, 32, 1, AccumType, Element, ElementC>(512, 256, 128, seed, label, rtol, atol));
+
+    printf("# %s summary: %d PASS, %d FAIL (total %d)\n\n", label, pass, fail, pass + fail);
+}
+
 int main(const int argc, char** argv) {
     long seed = 42;
     if (argc > 1) seed = std::stol(argv[1]);
@@ -211,14 +248,14 @@ int main(const int argc, char** argv) {
     printf("precision, M, N, K, bM, bN, bK, threads, error_pct, max_abs_err, status\n");
 
     // FP16: rtol=2e-2, atol=2e-3
-    run_precision_suite<__half, __half, float>("fp16", seed, 2e-2f, 2e-3f);
+    run_precision_suite_half<__half, __half, float>("fp16", seed, 2e-2f, 2e-3f);
 
     // BF16: rtol=2e-2, atol=2e-3 (same tolerance as FP16 — BF16 has less mantissa)
-    run_precision_suite<__nv_bfloat16, __nv_bfloat16, float>("bf16", seed, 2e-2f, 2e-3f);
+    run_precision_suite_half<__nv_bfloat16, __nv_bfloat16, float>("bf16", seed, 2e-2f, 2e-3f);
 
-    // FP32: rtol=1e-4, atol=1e-5
+    // FP32: rtol=1e-4, atol=1e-5, bK=32 (LDS budget: float=4B, halve K-tile)
     // MFMA FMA ordering differs from sequential CPU reference; ~1e-6 rounding expected
-    run_precision_suite<float, float, float>("fp32", seed, 1e-4f, 1e-5f);
+    run_precision_suite_fp32<float>("fp32", seed, 1e-4f, 1e-5f);
 
     printf("############################################################\n");
     printf("# Done. Results saved above.\n");
