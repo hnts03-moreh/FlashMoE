@@ -233,13 +233,18 @@ namespace flashmoe {
       return Topology::MIXED;
     }
 #if defined(MPI_VERSION)
-    MPI_Comm local_comm;
-    MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &local_comm);
-    int local_size = 0;
-    MPI_Comm_size(local_comm, &local_size);
-    MPI_Comm_free(&local_comm);
-    int world_size = flashmoe::shmem::n_pes();
-    return (local_size == world_size) ? Topology::NVLINK_ONLY : Topology::MIXED;
+    int mpi_initialized = 0;
+    MPI_Initialized(&mpi_initialized);
+    if (mpi_initialized) {
+      MPI_Comm local_comm;
+      MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &local_comm);
+      int local_size = 0;
+      MPI_Comm_size(local_comm, &local_size);
+      MPI_Comm_free(&local_comm);
+      int world_size = flashmoe::shmem::n_pes();
+      return (local_size == world_size) ? Topology::NVLINK_ONLY : Topology::MIXED;
+    }
+    return Topology::MIXED;
 #else
     // No MPI available — conservatively assume MIXED
     return Topology::MIXED;

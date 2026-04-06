@@ -343,6 +343,12 @@ void kickstart(const Options& opts) {
       .append(", k: ").append(std::to_string(opts.k))};
 #endif
 #if defined(FLASHMOE_PLATFORM_HIP)
+  // Ensure MPI is initialized (host stubs skip rocshmem_init which would do this)
+  {
+    int mpi_initialized = 0;
+    MPI_Initialized(&mpi_initialized);
+    if (!mpi_initialized) MPI_Init(nullptr, nullptr);
+  }
   flashmoe::shmem::init();
   // ROCSHMEM has no TEAM_NODE; use MPI to get local rank
   MPI_Comm local_comm;
