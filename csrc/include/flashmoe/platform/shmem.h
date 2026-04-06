@@ -24,6 +24,8 @@
 // ------- ROCm / ROCSHMEM path -------
 #  if !defined(FLASHMOE_SHMEM_HOST_STUBS)
 #    include <rocshmem/rocshmem.hpp>
+#  else
+#    include <hip/hip_runtime.h>
 #  endif
 #  define FLASHMOE_HAS_SHMEM 1
 #else
