@@ -842,18 +842,30 @@ void drive(const int argc, char** argv) {
     throw std::invalid_argument("k must be <= E");
   }
   // to minimize instantiated templates
+#if defined(FLASHMOE_PLATFORM_HIP)
+  // HIP/MI300X: smaller tiles to fit 64KB LDS (no async copy pipeline)
+  constexpr int bN0 = 64;
+  constexpr int bN1 = bN0;
+  constexpr int bK0 = 32;
+  constexpr int bK1 = bK0;
+#else
   constexpr int bN0 = sizeof(Element) == 2 ? 128 : 64; // 144 for gpt-oss
   constexpr int bN1 = bN0;
   constexpr int bK0 = cuda::std::is_same_v<Element, double> ? 32 : mt == flashmoe::MLPMatmulType::vanilla ? 64 :
   arch >= 900 ? 64 : 32;
   constexpr int bK1 = bK0;
+#endif
   if (H <= bK0 || H % bK0 != 0 || H < bN1 || H % bN1 != 0) {
     throw std::invalid_argument("H is invalid");
   }
   if (I <= bK1 || I % bK1 != 0 || I < bN0 || I % bN0 != 0) {
     throw std::invalid_argument("I is invalid");
   }
+#if defined(FLASHMOE_PLATFORM_HIP)
+  constexpr auto pS = 1; // HIP: no async copy pipeline
+#else
   constexpr auto pS = arch >= 900 ? 3 : arch >= 800 ? 2 : 1; // Hopper 3
+#endif
   constexpr auto bM = cuda::std::is_same_v<Element, double> ? 64 : 128; // hopper, S >= 4096 -> bM = 256
   static_assert(bM >= 1);
   if (S < 1 || (S > bM && S % bM != 0)) {
