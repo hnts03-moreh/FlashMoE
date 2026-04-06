@@ -204,48 +204,48 @@ __host__ inline void sync_all() {
 // =====================================================================
 //  DEVICE API wrappers
 // =====================================================================
+//
+// FLASHMOE_SHMEM_DEVICE_STUBS: When defined, all device-side SHMEM calls
+// become no-op stubs. Use this when ROCSHMEM device bitcode is not available
+// for RDC linking (e.g., ROCSHMEM static lib lacks device objects).
+// The E2E kernel will run but skip inter-PE communication.
 
 namespace flashmoe::shmem::device {
 
 // --------------- Kernel init / finalize (device-side) ----------------
-// ROCSHMEM historically required rocshmem_wg_init() at kernel entry and
-// rocshmem_wg_finalize() before kernel exit. These APIs are now deprecated
-// (the LL_MoE reference kernels no longer call them), but we still provide
-// thin wrappers so that older ROCSHMEM builds continue to work.
-// On CUDA / NVSHMEM the functions are no-ops.
 
 __device__ __forceinline__
 void wg_init() {
-#if defined(FLASHMOE_PLATFORM_HIP) && !defined(FLASHMOE_SKIP_WG_INIT)
+#if defined(FLASHMOE_SHMEM_DEVICE_STUBS) || defined(FLASHMOE_SKIP_WG_INIT)
+  // stub / skipped
+#elif defined(FLASHMOE_PLATFORM_HIP)
 #  pragma clang diagnostic push
 #  pragma clang diagnostic ignored "-Wdeprecated-declarations"
   rocshmem::rocshmem_wg_init();
 #  pragma clang diagnostic pop
 #endif
-  // NVSHMEM has no equivalent -- no-op.
-  // Set FLASHMOE_SKIP_WG_INIT=1 to skip deprecated wg_init on newer ROCSHMEM.
 }
 
 __device__ __forceinline__
 void wg_finalize() {
-#if defined(FLASHMOE_PLATFORM_HIP) && !defined(FLASHMOE_SKIP_WG_INIT)
+#if defined(FLASHMOE_SHMEM_DEVICE_STUBS) || defined(FLASHMOE_SKIP_WG_INIT)
+  // stub / skipped
+#elif defined(FLASHMOE_PLATFORM_HIP)
 #  pragma clang diagnostic push
 #  pragma clang diagnostic ignored "-Wdeprecated-declarations"
   rocshmem::rocshmem_wg_finalize();
 #  pragma clang diagnostic pop
 #endif
-  // NVSHMEM has no equivalent -- no-op.
 }
 
 // --------------- putmem_signal_nbi (device-side) ---------------------
-// NVSHMEM: nvshmem_putmem_signal_nbi(dest, source, bytes, sig, sigval, sigop, pe)
-// ROCSHMEM: rocshmem_putmem_signal_nbi(dest, source, bytes, sig, sigval, sigop, pe)
-//   Signature is identical.
 
 __device__ __forceinline__
 void putmem_signal_nbi(void* dest, const void* source, size_t nelems,
                        uint64_t* sig_addr, uint64_t signal, int sig_op, int pe) {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_DEVICE_STUBS)
+  (void)dest; (void)source; (void)nelems; (void)sig_addr; (void)signal; (void)sig_op; (void)pe;
+#elif defined(FLASHMOE_PLATFORM_HIP)
   rocshmem::rocshmem_putmem_signal_nbi(dest, source, nelems, sig_addr, signal, sig_op, pe);
 #else
   nvshmem_putmem_signal_nbi(dest, source, nelems, sig_addr, signal, sig_op, pe);
@@ -253,14 +253,12 @@ void putmem_signal_nbi(void* dest, const void* source, size_t nelems,
 }
 
 // --------------- signal_op (device-side) -----------------------------
-// NVSHMEM: nvshmemx_signal_op(sig_addr, sigval, sigop, pe)
-// ROCSHMEM: No direct signal_op. Emulate via rocshmem_uint64_atomic_set.
-//   For SIGNAL_SET:  rocshmem_uint64_atomic_set(sig_addr, sigval, pe)
-//   For SIGNAL_ADD:  rocshmem_uint64_atomic_add(sig_addr, sigval, pe)
 
 __device__ __forceinline__
 void signal_op(uint64_t* sig_addr, uint64_t signal, int sig_op, int pe) {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_DEVICE_STUBS)
+  (void)sig_addr; (void)signal; (void)sig_op; (void)pe;
+#elif defined(FLASHMOE_PLATFORM_HIP)
   if (sig_op == SHMEM_SIGNAL_SET) {
     rocshmem::rocshmem_uint64_atomic_set(sig_addr, signal, pe);
   } else {
@@ -275,7 +273,9 @@ void signal_op(uint64_t* sig_addr, uint64_t signal, int sig_op, int pe) {
 
 __device__ __forceinline__
 void* shmem_ptr(const void* dest, int pe) {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_DEVICE_STUBS)
+  (void)pe; return const_cast<void*>(dest);
+#elif defined(FLASHMOE_PLATFORM_HIP)
   return rocshmem::rocshmem_ptr(dest, pe);
 #else
   return nvshmem_ptr(const_cast<void*>(dest), pe);
@@ -286,7 +286,9 @@ void* shmem_ptr(const void* dest, int pe) {
 
 __device__ __forceinline__
 int n_pes() {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_DEVICE_STUBS)
+  return 1;
+#elif defined(FLASHMOE_PLATFORM_HIP)
   return rocshmem::rocshmem_n_pes();
 #else
   return nvshmem_n_pes();
@@ -295,7 +297,9 @@ int n_pes() {
 
 __device__ __forceinline__
 int my_pe() {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_DEVICE_STUBS)
+  return 0;
+#elif defined(FLASHMOE_PLATFORM_HIP)
   return rocshmem::rocshmem_my_pe();
 #else
   return nvshmem_my_pe();
@@ -306,7 +310,9 @@ int my_pe() {
 
 __device__ __forceinline__
 void fence() {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_DEVICE_STUBS)
+  // no-op
+#elif defined(FLASHMOE_PLATFORM_HIP)
   rocshmem::rocshmem_fence();
 #else
   nvshmem_fence();
@@ -315,7 +321,9 @@ void fence() {
 
 __device__ __forceinline__
 void quiet() {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_DEVICE_STUBS)
+  // no-op
+#elif defined(FLASHMOE_PLATFORM_HIP)
   rocshmem::rocshmem_quiet();
 #else
   nvshmem_quiet();
@@ -323,11 +331,12 @@ void quiet() {
 }
 
 // --------------- signal_wait_until (device-side) ---------------------
-// ROCSHMEM provides rocshmem_uint64_wait_until as the type-specific variant.
 
 __device__ __forceinline__
 void signal_wait_until(uint64_t* sig_addr, int cmp, uint64_t cmp_value) {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_DEVICE_STUBS)
+  (void)sig_addr; (void)cmp; (void)cmp_value;
+#elif defined(FLASHMOE_PLATFORM_HIP)
   rocshmem::rocshmem_uint64_wait_until(sig_addr, cmp, cmp_value);
 #else
   nvshmem_signal_wait_until(sig_addr, cmp, cmp_value);
@@ -338,7 +347,9 @@ void signal_wait_until(uint64_t* sig_addr, int cmp, uint64_t cmp_value) {
 
 __device__ __forceinline__
 uint64_t signal_fetch(const uint64_t* sig_addr) {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_DEVICE_STUBS)
+  return sig_addr ? *sig_addr : 0;
+#elif defined(FLASHMOE_PLATFORM_HIP)
   return rocshmem::rocshmem_signal_fetch(sig_addr);
 #else
   return nvshmem_signal_fetch(sig_addr);
@@ -346,12 +357,12 @@ uint64_t signal_fetch(const uint64_t* sig_addr) {
 }
 
 // --------------- uint64_test (device-side) ---------------------------
-// NVSHMEM: nvshmem_uint64_test(ptr, cmp, val) -> int (1 if condition met)
-// ROCSHMEM: rocshmem_uint64_test(ptr, cmp, val) -> int
 
 __device__ __forceinline__
 int uint64_test(uint64_t* ivars, int cmp, uint64_t val) {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_SHMEM_DEVICE_STUBS)
+  (void)ivars; (void)cmp; (void)val; return 1;
+#elif defined(FLASHMOE_PLATFORM_HIP)
   return rocshmem::rocshmem_uint64_test(ivars, cmp, val);
 #else
   return nvshmem_uint64_test(ivars, cmp, val);
