@@ -216,18 +216,19 @@ namespace flashmoe::shmem::device {
 
 __device__ __forceinline__
 void wg_init() {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_PLATFORM_HIP) && !defined(FLASHMOE_SKIP_WG_INIT)
 #  pragma clang diagnostic push
 #  pragma clang diagnostic ignored "-Wdeprecated-declarations"
   rocshmem::rocshmem_wg_init();
 #  pragma clang diagnostic pop
 #endif
   // NVSHMEM has no equivalent -- no-op.
+  // Set FLASHMOE_SKIP_WG_INIT=1 to skip deprecated wg_init on newer ROCSHMEM.
 }
 
 __device__ __forceinline__
 void wg_finalize() {
-#if defined(FLASHMOE_PLATFORM_HIP)
+#if defined(FLASHMOE_PLATFORM_HIP) && !defined(FLASHMOE_SKIP_WG_INIT)
 #  pragma clang diagnostic push
 #  pragma clang diagnostic ignored "-Wdeprecated-declarations"
   rocshmem::rocshmem_wg_finalize();

@@ -565,7 +565,10 @@ else()
   flash_hip_lto_target(testFlashMoE)
   if(FLASHMOE_HAS_ROCSHMEM)
     target_link_libraries(testFlashMoE PRIVATE roc::rocshmem)
-    target_compile_definitions(testFlashMoE PRIVATE FLASHMOE_HAS_SHMEM=1)
+    target_compile_definitions(testFlashMoE PRIVATE
+      FLASHMOE_HAS_SHMEM=1
+      FLASHMOE_SKIP_WG_INIT=1  # rocshmem_wg_init deprecated in ROCSHMEM 7.0
+    )
     find_package(MPI QUIET COMPONENTS CXX)
     if(TARGET MPI::MPI_CXX)
       target_link_libraries(testFlashMoE PRIVATE MPI::MPI_CXX)
