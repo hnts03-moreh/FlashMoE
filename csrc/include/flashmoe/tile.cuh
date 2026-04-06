@@ -676,10 +676,11 @@ namespace flashmoe::tile {
           }
         }
         // Copy B tile [bK, bN] from global memory to shared memory
-        // B is [K, N] row-major; shared B is col_major with padded stride
-        // load_b reads: sB.ptr[n * sB_stride + k]
+        // B is [N, K] row-major (PyTorch convention); GEMM computes A @ B.T
+        // Shared B is col_major: execute reads B_smem[k,n] from sB.ptr[k + n*sB_stride]
+        // So we store B.T[k,n] = B[n,k] = b[(tileCol*bN+n)*K + kStage*bK+k]
         {
-          const auto* __restrict__ gB_ptr = b + kStage * bK * N + cute::get<1>(tileCoord) * bN;
+          const auto* __restrict__ gB_ptr = b + cute::get<1>(tileCoord) * bN * K + kStage * bK;
           constexpr int sB_stride = BLAS::SmemLayoutB::stride;
           constexpr int threads_val = BLAS::max_threads_per_block;
           constexpr int total_b = bK * bN;
@@ -689,9 +690,9 @@ namespace flashmoe::tile {
             if (flat < total_b) {
               int k = flat / bN;
               int n = flat % bN;
-              // Row-major copy: global stride=N, shared stride=sB_stride
-              // (load_b col_major access transposes implicitly)
-              sB.ptr[k * sB_stride + n] = gB_ptr[k * N + n];
+              // Col-major store: B.T[k,n] at address k + n*sB_stride
+              // Global read: B[n,k] = gB_ptr[n*K + k]
+              sB.ptr[k + n * sB_stride] = gB_ptr[n * K + k];
             }
           }
         }

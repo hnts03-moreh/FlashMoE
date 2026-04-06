@@ -572,6 +572,16 @@ else()
     endif()
   endif()
 
+  # --- GEMM diagnostic (128+ tile MFMA debug) ---
+  add_executable(diagGEMM tests/diagGEMM.cu)
+  set_source_files_properties(tests/diagGEMM.cu PROPERTIES LANGUAGE HIP)
+  flash_hip_common_target(diagGEMM)
+  if(TARGET hip::hiprand)
+    target_link_libraries(diagGEMM PRIVATE hip::hiprand)
+  elseif(HIPRAND_LIB)
+    target_link_libraries(diagGEMM PRIVATE ${HIPRAND_LIB})
+  endif()
+
   # --- Playground (minimal, no GPU deps) ---
   add_executable(playground tests/playground.cu)
   set_source_files_properties(tests/playground.cu PROPERTIES LANGUAGE HIP)

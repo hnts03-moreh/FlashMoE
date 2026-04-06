@@ -157,6 +157,71 @@ void softmax_rows(const Element* x, float* out, int rows, int cols) {
     }
 }
 
+// Verbose compare: print first max_print mismatches with (row, col), actual, expected, diff
+// Also prints per-tile error breakdown for diagnosing multi-tile MFMA issues
+template<typename ElementC>
+double compare_isclose_verbose(
+    const ElementC* actual, const ElementC* expected,
+    int M, int N, float rtol, float atol,
+    int tile_m, int tile_n, int max_print = 20)
+{
+    const int count = M * N;
+    long matches = 0;
+    int printed = 0;
+
+    // Per-tile error tracking
+    const int tiles_m = (M + tile_m - 1) / tile_m;
+    const int tiles_n = (N + tile_n - 1) / tile_n;
+    const int num_tiles = tiles_m * tiles_n;
+    std::vector<int> tile_total(num_tiles, 0);
+    std::vector<int> tile_errors(num_tiles, 0);
+    // Track max absolute error per tile
+    std::vector<float> tile_max_err(num_tiles, 0.f);
+
+    for (int i = 0; i < count; ++i) {
+        float a = to_float(actual[i]);
+        float e = to_float(expected[i]);
+        float diff = std::fabs(a - e);
+
+        int row = i / N;
+        int col = i % N;
+        int ti = row / tile_m;
+        int tj = col / tile_n;
+        int tile_idx = ti * tiles_n + tj;
+        tile_total[tile_idx]++;
+
+        if (diff <= atol + rtol * std::fabs(e)) {
+            ++matches;
+        } else {
+            tile_errors[tile_idx]++;
+            if (diff > tile_max_err[tile_idx]) tile_max_err[tile_idx] = diff;
+            if (printed < max_print) {
+                printf("  MISMATCH [%d,%d] (tile[%d,%d]): actual=%.6f expected=%.6f diff=%.6f\n",
+                       row, col, ti, tj, a, e, diff);
+                ++printed;
+            }
+        }
+    }
+
+    double error_pct = (1.0 - static_cast<double>(matches) / static_cast<double>(count)) * 100.0;
+
+    // Print per-tile summary
+    printf("\n  === Per-tile error breakdown (bM=%d, bN=%d) ===\n", tile_m, tile_n);
+    for (int t = 0; t < num_tiles; ++t) {
+        if (tile_errors[t] > 0 || num_tiles <= 16) {
+            int ti = t / tiles_n;
+            int tj = t % tiles_n;
+            double te = (tile_total[t] > 0)
+                ? (static_cast<double>(tile_errors[t]) / tile_total[t] * 100.0) : 0.0;
+            printf("  tile[%d,%d]: %d/%d errors (%.1f%%) max_abs_err=%.6f\n",
+                   ti, tj, tile_errors[t], tile_total[t], te, tile_max_err[t]);
+        }
+    }
+    printf("  === Total: %.2f%% error (%ld/%d match) ===\n\n", error_pct, matches, count);
+
+    return error_pct;
+}
+
 } // namespace host_ref
 
 #endif // FLASHMOE_HOST_REFERENCE_CUH

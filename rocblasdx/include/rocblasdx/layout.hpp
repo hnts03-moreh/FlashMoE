@@ -86,10 +86,13 @@ struct SuggestSmemLayout<row_major, Rows, Cols, Element> {
     using type = SmemLayout<Rows, Cols, PaddedStride<Element, Cols>::value>;
 };
 
-// Col-major: shape [Rows, Cols], stride = Rows + padding (stored as [Cols, Rows] transposed)
+// Col-major: shape [Rows, Cols], stride = Rows + padding
+// For cosize correctness, swap to SmemLayout<Cols, Rows, stride> so that
+// cosize = Cols * stride = slow_dim * stride (Cols is the slow dimension in col-major).
+// load_b/execute access sB.ptr[col * stride + row], which is unchanged.
 template <int Rows, int Cols, typename Element>
 struct SuggestSmemLayout<col_major, Rows, Cols, Element> {
-    using type = SmemLayout<Rows, Cols, PaddedStride<Element, Rows>::value>;
+    using type = SmemLayout<Cols, Rows, PaddedStride<Element, Rows>::value>;
 };
 
 } // namespace rocblasdx

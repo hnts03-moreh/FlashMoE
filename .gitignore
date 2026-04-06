@@ -18,4 +18,5 @@ csrc/*.log
 
 build/
 dist/
+results/
 _workspace/
