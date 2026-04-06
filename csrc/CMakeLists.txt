@@ -562,22 +562,28 @@ else()
   # --- FlashMoE E2E test (requires ROCSHMEM + MPI) ---
   add_executable(testFlashMoE tests/flashmoe.cu)
   set_source_files_properties(tests/flashmoe.cu PROPERTIES LANGUAGE HIP)
-  # Use ROCSHMEM device stubs to avoid RDC device bitcode linking issues.
-  # ROCSHMEM host API (init/finalize/malloc) works; device-side SHMEM calls
-  # are stubbed out. For real distributed communication, ROCSHMEM must be
-  # rebuilt with device bitcode support for -fgpu-rdc linking.
-  option(FLASHMOE_SHMEM_DEVICE_STUBS "Stub ROCSHMEM device calls (avoids RDC link issues)" ON)
   flash_hip_lto_target(testFlashMoE)
   if(FLASHMOE_HAS_ROCSHMEM)
-    # Always link full roc::rocshmem (provides -fgpu-rdc, HSA deps, device code)
     target_link_libraries(testFlashMoE PRIVATE roc::rocshmem)
     target_compile_definitions(testFlashMoE PRIVATE
       FLASHMOE_HAS_SHMEM=1
       FLASHMOE_SKIP_WG_INIT=1
     )
-    if(FLASHMOE_SHMEM_DEVICE_STUBS)
-      target_compile_definitions(testFlashMoE PRIVATE FLASHMOE_SHMEM_DEVICE_STUBS=1)
+    # Link ROCSHMEM device bitcode for gfx942 — required for -fgpu-rdc
+    # to resolve device-side SHMEM symbols (putmem_signal_nbi, fence, etc.)
+    set(_ROCM_LIB "$ENV{ROCM_PATH}/lib")
+    if(NOT EXISTS "${_ROCM_LIB}")
+      set(_ROCM_LIB "/opt/rocm/lib")
     endif()
+    foreach(_gfx IN ITEMS ${CMAKE_HIP_ARCHITECTURES})
+      set(_bc "${_ROCM_LIB}/librocshmem_device_${_gfx}.bc")
+      if(EXISTS "${_bc}")
+        message(STATUS "Linking ROCSHMEM device bitcode: ${_bc}")
+        target_link_libraries(testFlashMoE PRIVATE "${_bc}")
+      else()
+        message(WARNING "ROCSHMEM device bitcode not found: ${_bc}")
+      endif()
+    endforeach()
     find_package(MPI QUIET COMPONENTS CXX)
     if(TARGET MPI::MPI_CXX)
       target_link_libraries(testFlashMoE PRIVATE MPI::MPI_CXX)
