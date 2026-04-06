@@ -569,10 +569,9 @@ else()
       FLASHMOE_HAS_SHMEM=1
       FLASHMOE_SKIP_WG_INIT=1
     )
-    # Link ROCSHMEM device bitcode for gfx942 — required for -fgpu-rdc
+    # Link ROCSHMEM device bitcode for target arch — required for -fgpu-rdc
     # to resolve device-side SHMEM symbols (putmem_signal_nbi, fence, etc.)
-    # Must use -Xclang -mlink-builtin-bitcode (not target_link_libraries)
-    # because .bc files are LLVM bitcode, not regular object files.
+    # Use -Xoffload-linker to pass .bc to the AMDGPU device linker.
     set(_ROCM_LIB "$ENV{ROCM_PATH}/lib")
     if(NOT EXISTS "${_ROCM_LIB}")
       set(_ROCM_LIB "/opt/rocm/lib")
@@ -581,11 +580,8 @@ else()
       set(_bc "${_ROCM_LIB}/librocshmem_device_${_gfx}.bc")
       if(EXISTS "${_bc}")
         message(STATUS "Linking ROCSHMEM device bitcode: ${_bc}")
-        target_compile_options(testFlashMoE PRIVATE
-          $<$<COMPILE_LANGUAGE:HIP>:
-            -Xclang -mlink-builtin-bitcode
-            -Xclang ${_bc}
-          >
+        target_link_options(testFlashMoE PRIVATE
+          "SHELL:-Xoffload-linker-${_gfx} ${_bc}"
         )
       else()
         message(WARNING "ROCSHMEM device bitcode not found: ${_bc}")
